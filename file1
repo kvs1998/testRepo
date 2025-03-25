@@ -196,13 +196,13 @@ print("Email sent successfully!")
 
 
 
-<td style="
-    background-color: 
-    {% if table.time_within_target_lag_ratio > 1.5 %} red; 
-    {% elif table.time_within_target_lag_ratio > 1 %} orange; 
-    {% else %} green; 
-    {% endif %}
-    color: white;
-">
-    {{ table.time_within_target_lag_ratio }}
+<td style="background-color:
+    {% if table.time_within_target_lag_ratio is none %} lightgray
+    {% elif table.time_within_target_lag_ratio < 0.2 %} red
+    {% elif table.time_within_target_lag_ratio < 0.5 %} orange
+    {% elif table.time_within_target_lag_ratio < 0.8 %} yellow
+    {% else %} lightgreen
+    {% endif %};
+    color: black;">
+    {{ table.time_within_target_lag_ratio if table.time_within_target_lag_ratio is not none else "N/A" }}
 </td>
