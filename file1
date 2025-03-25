@@ -192,3 +192,27 @@ with smtplib.SMTP("abc.my_company.com") as server:
     server.send_message(msg)
 
 print("Email sent successfully!")
+
+
+
+
+import matplotlib.pyplot as plt
+
+# Data
+labels = ["Successful Tables", "Failed Tables"]
+sizes = [0, 100]
+colors = ["green", "red"]
+
+# Create Figure and Pie Chart
+fig, ax = plt.subplots(figsize=(6, 6))
+ax.pie(sizes, labels=labels, autopct="%1.1f%%", colors=colors, startangle=90)
+
+# Title
+plt.title("Table Refresh Status", fontsize=14, fontweight="bold")
+
+# Adjust Layout
+plt.tight_layout()  # 🔹 Automatically adjusts layout to avoid overlaps
+
+# Show or Save
+plt.savefig("pie_chart.png", bbox_inches="tight")  # Ensures no extra padding
+plt.show()
