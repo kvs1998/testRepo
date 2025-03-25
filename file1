@@ -196,43 +196,22 @@ print("Email sent successfully!")
 
 
 
-import matplotlib.pyplot as plt
+<h2>Dynamic Table Refresh Status</h2>
 
-def plot_top_10_lags(table_data):
-    """
-    Extracts top 10 tables by mean_lag and plots a line graph.
-    :param table_data: List of dictionaries containing table metadata.
-    """
+<table style="width: 100%;">
+    <tr>
+        <!-- Left: Pie Chart -->
+        <td style="width: 40%; text-align: left;">
+            <h3>Pie Chart</h3>
+            <img src="data:image/png;base64,{{ pie_chart }}" alt="Table Refresh Status Pie Chart"/>
+        </td>
 
-    # Sort tables by mean_lag in descending order & pick top 10
-    top_10_tables = sorted(table_data, key=lambda x: x["mean_lag"], reverse=True)[:10]
-
-    # Extract required data
-    table_labels = [t["name"] for t in top_10_tables]  # Table names only
-    mean_lag_values = [t["mean_lag"] for t in top_10_tables]
-    target_lag_values = [t["target_lag"] for t in top_10_tables]
-
-    # Create the plot
-    fig, ax = plt.subplots(figsize=(12, 5))  # Wide for scroll effect
-
-    # Plot Mean Lag
-    ax.plot(table_labels, mean_lag_values, marker='o', linestyle='-', color='b', label="Mean Lag")
-
-    # Plot Target Lag for reference
-    ax.plot(table_labels, target_lag_values, marker='s', linestyle='--', color='r', label="Target Lag")
-
-    # Labels & Formatting
-    ax.set_xlabel("Tables")
-    ax.set_ylabel("Lag (seconds)")
-    ax.set_title("Top 10 Tables by Mean Lag vs Target Lag")
-    ax.grid(True)
-    ax.legend()
-
-    # Rotate x-axis labels for readability
-    plt.xticks(rotation=45, ha="right")
-
-    # Save the graph to a file for embedding in emails
-    plt.tight_layout()
-    plt.savefig("top_10_mean_lag.png", dpi=100)
-    plt.show()
-
+        <!-- Right: Scrollable Line Chart -->
+        <td style="width: 60%; text-align: left;">
+            <h3>Top 10 Tables by Mean Lag</h3>
+            <div style="overflow-x: auto; width: 100%;">
+                <img src="data:image/png;base64,{{ line_chart }}" alt="Top 10 Tables by Mean Lag"/>
+            </div>
+        </td>
+    </tr>
+</table>
