@@ -196,22 +196,28 @@ print("Email sent successfully!")
 
 
 
-<h2>Dynamic Table Refresh Status</h2>
+import matplotlib.pyplot as plt
+import io
+import base64
 
-<table style="width: 100%;">
-    <tr>
-        <!-- Left: Pie Chart -->
-        <td style="width: 40%; text-align: left;">
-            <h3>Pie Chart</h3>
-            <img src="data:image/png;base64,{{ pie_chart }}" alt="Table Refresh Status Pie Chart"/>
-        </td>
+def generate_line_chart(top_10_tables):
+    buffer = io.BytesIO()
 
-        <!-- Right: Scrollable Line Chart -->
-        <td style="width: 60%; text-align: left;">
-            <h3>Top 10 Tables by Mean Lag</h3>
-            <div style="overflow-x: auto; width: 100%;">
-                <img src="data:image/png;base64,{{ line_chart }}" alt="Top 10 Tables by Mean Lag"/>
-            </div>
-        </td>
-    </tr>
-</table>
+    table_names = [t['table_name'] for t in top_10_tables]
+    mean_lags = [t['mean_lag'] for t in top_10_tables]
+    target_lags = [t['target_lag'] for t in top_10_tables]
+
+    plt.figure(figsize=(15, 4))  # Wider figure to improve readability
+    plt.plot(table_names, mean_lags, marker='o', linestyle='-', color='blue', label='Mean Lag')
+    plt.plot(table_names, target_lags, marker='s', linestyle='--', color='red', label='Target Lag')
+
+    plt.xticks(rotation=60, ha="right")  # Rotate labels for better visibility
+    plt.ylabel("Lag (seconds)")
+    plt.title("Top 10 Tables by Mean Lag vs Target Lag")
+    plt.legend()
+    plt.grid(True)
+
+    plt.savefig(buffer, format="png", dpi=100, bbox_inches="tight")
+    plt.close()
+
+    return base64.b64encode(buffer.getvalue()).decode()
