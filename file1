@@ -196,20 +196,20 @@ print("Email sent successfully!")
 
 
 
-import matplotlib.pyplot as plt
+<h2>Dynamic Table Refresh Status</h2>
 
-# Sample data
-tables = [f"Table {i}" for i in range(1, 101)]  # 100 Tables
-target_lags = [50 + i % 10 for i in range(100)]  # Example values
-mean_lags = [45 + i % 15 for i in range(100)]  # Example values
+<!-- Container for Pie Chart and Line Chart -->
+<div style="display: flex; justify-content: space-between; align-items: center;">
+    <!-- Pie Chart (Aligned Left) -->
+    <div style="flex: 1;">
+        <h3>Pie Chart</h3>
+        <img src="data:image/png;base64,{{ pie_chart }}" alt="Table Refresh Status Pie Chart"/>
+    </div>
 
-plt.figure(figsize=(12, 5))
-plt.plot(tables, target_lags, label="Target Lag", marker="o", linestyle="-", color="blue")
-plt.plot(tables, mean_lags, label="Mean Lag", marker="s", linestyle="--", color="red")
-plt.xticks(rotation=90)  # Rotate labels for readability
-plt.xlabel("Tables")
-plt.ylabel("Lag (seconds)")
-plt.title("Target Lag vs. Mean Lag per Table")
-plt.legend()
-plt.tight_layout()
-plt.show()
+    <!-- Line Chart (Aligned Right) -->
+    <div style="flex: 1;">
+        <h3>Top 10 Tables by Mean Lag</h3>
+        <img src="data:image/png;base64,{{ line_chart }}" alt="Top 10 Mean Lag Trend"/>
+    </div>
+</div>
+
