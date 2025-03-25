@@ -1,1 +1,164 @@
-This is file 1.
+--<<<<<<<<<<<<<<<<<<< FETCH DATA FOR HTML BODY >>>>>>>>>>>>>>>>>>>>>--
+import snowflake.connector
+import pandas as pd
+import matplotlib.pyplot as plt
+import jinja2
+import base64
+from io import BytesIO
+
+# Snowflake connection
+conn = snowflake.connector.connect(
+    user="your_username",
+    password="your_password",
+    account="your_account"
+)
+
+# Query to fetch table refresh status
+query = """
+SELECT DATABASE_NAME, SCHEMA_NAME, NAME, TARGET_LAG_SEC, MEAN_LAG_SEC,
+       MAXIMUM_LAG_SEC, TIME_WITHIN_TARGET_LAG_RATIO, LAST_COMPLETED_REFRESH_STATE,
+       LAST_COMPLETED_REFRESH_STATE_MESSAGE
+FROM TABLE (
+    <DB_NAME>.INFORMATION_SCHEMA.DYNAMIC_TABLES(
+        INCLUDE_CONNECTED => False
+    )
+)
+WHERE DATABASE_NAME = '<DB_NAME>'
+AND SCHEMA_NAME = '<SCHEMA_NAME>'
+AND NAME LIKE '<REGEX>'
+ORDER BY TARGET_LAG_SEC;
+"""
+
+cur = conn.cursor()
+cur.execute(query)
+rows = cur.fetchall()
+
+# Categorize data
+successful_tables = []
+failed_tables = []
+for row in rows:
+    table_data = {
+        "database_name": row[0],
+        "schema_name": row[1],
+        "name": row[2],
+        "target_lag_sec": row[3],
+        "mean_lag_sec": row[4],
+        "maximum_lag_sec": row[5],
+        "time_within_target_lag_ratio": row[6],
+        "last_completed_refresh_state": row[7],
+        "last_completed_refresh_state_message": row[8]
+    }
+    if row[7] == 'SUCCESS':
+        successful_tables.append(table_data)
+    else:
+        failed_tables.append(table_data)
+
+# Close connections
+cur.close()
+conn.close()
+
+
+--<<<<<<<<<<<<<<<<<<< HTML BODY'S PIE CHART >>>>>>>>>>>>>>>>>>>>>--
+# Generate Pie Chart
+labels = ['Successful Tables', 'Failed Tables']
+sizes = [len(successful_tables), len(failed_tables)]
+colors = ['green', 'red']
+explode = (0.1, 0)  # Slightly separate the success portion
+
+plt.figure(figsize=(5, 5))
+plt.pie(sizes, labels=labels, autopct='%1.1f%%', colors=colors, explode=explode, startangle=140)
+plt.title("Table Refresh Status")
+
+# Save pie chart as a base64 string
+buffer = BytesIO()
+plt.savefig(buffer, format="png")
+buffer.seek(0)
+pie_chart_base64 = base64.b64encode(buffer.getvalue()).decode()
+buffer.close()
+
+--<<<<<<<<<<<<<<<<<<< HTML BODY >>>>>>>>>>>>>>>>>>>>>--
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th, td {
+            border: 1px solid black;
+            padding: 8px;
+            text-align: left;
+        }
+        th {
+            background-color: #f2f2f2;
+        }
+        img {
+            display: block;
+            margin-left: auto;
+            margin-right: auto;
+        }
+    </style>
+</head>
+<body>
+    <h2>Dynamic Table Refresh Status</h2>
+
+    <!-- Pie Chart -->
+    <img src="data:image/png;base64,{{ pie_chart }}" alt="Table Refresh Status Pie Chart"/>
+
+    <h3>Successful Tables</h3>
+    <table>
+        <tr>
+            <th>Database Name</th>
+            <th>Schema Name</th>
+            <th>Table Name</th>
+            <th>Target Lag (sec)</th>
+            <th>Mean Lag (sec)</th>
+            <th>Max Lag (sec)</th>
+            <th>Within Target Ratio</th>
+            <th>Last Refresh State</th>
+        </tr>
+        {% for table in successful_tables %}
+        <tr>
+            <td>{{ table.database_name }}</td>
+            <td>{{ table.schema_name }}</td>
+            <td>{{ table.name }}</td>
+            <td>{{ table.target_lag_sec }}</td>
+            <td>{{ table.mean_lag_sec }}</td>
+            <td>{{ table.maximum_lag_sec }}</td>
+            <td>{{ table.time_within_target_lag_ratio }}</td>
+            <td>{{ table.last_completed_refresh_state }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+
+    <h3>Failed Tables</h3>
+    <table>
+        <tr>
+            <th>Database Name</th>
+            <th>Schema Name</th>
+            <th>Table Name</th>
+            <th>Target Lag (sec)</th>
+            <th>Mean Lag (sec)</th>
+            <th>Max Lag (sec)</th>
+            <th>Within Target Ratio</th>
+            <th>Last Refresh State</th>
+            <th>Error Message</th>
+        </tr>
+        {% for table in failed_tables %}
+        <tr>
+            <td>{{ table.database_name }}</td>
+            <td>{{ table.schema_name }}</td>
+            <td>{{ table.name }}</td>
+            <td>{{ table.target_lag_sec }}</td>
+            <td>{{ table.mean_lag_sec }}</td>
+            <td>{{ table.maximum_lag_sec }}</td>
+            <td>{{ table.time_within_target_lag_ratio }}</td>
+            <td>{{ table.last_completed_refresh_state }}</td>
+            <td>{{ table.last_completed_refresh_state_message }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+</body>
+</html>
+
