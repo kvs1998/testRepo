@@ -162,3 +162,33 @@ buffer.close()
 </body>
 </html>
 
+
+-- <<<<<<<<<<<<<<<<<<<< SENT MAIL >>>>>>>>>>>>>>>>>> --
+from email.message import EmailMessage
+import smtplib
+import jinja2
+
+# Load Jinja2 template
+env = jinja2.Environment(loader=jinja2.FileSystemLoader('.'))
+template = env.get_template("email_template.html")
+
+# Render HTML with data
+html_content = template.render(
+    successful_tables=successful_tables,
+    failed_tables=failed_tables,
+    pie_chart=pie_chart_base64
+)
+
+# Setup the email message
+msg = EmailMessage()
+msg['From'] = "your_email@your_company.com"
+msg['To'] = "recipient@company.com"
+msg['Subject'] = "Dynamic Table Refresh Status"
+msg.set_content("This is a fallback message for email clients that don't support HTML.", subtype='plain')
+msg.add_alternative(html_content, subtype='html')
+
+# Send the email
+with smtplib.SMTP("abc.my_company.com") as server:
+    server.send_message(msg)
+
+print("Email sent successfully!")
