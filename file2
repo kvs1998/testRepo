@@ -50,20 +50,61 @@ ax.grid(True, linestyle="--", alpha=0.6)
 plt.show()
 
 
-<tr>
-  <td style="width: 40%; height: 50vh; vertical-align: top; text-align: left;">
-    <h3 style="font-weight: bold;"><u>Overall active/suspended tables:</u></h3>
-    <img src="data:image/png;base64,{{ pie_chart }}" 
-         alt="Table Refresh Status Pie Chart" 
-         style="max-height: 100%; width: auto;" />
-  </td>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EFONT Dynamic Table Refresh Status</title>
+    <style>
+        /* Container to hold both charts */
+        .container {
+            display: flex;  /* Side-by-side layout */
+            height: 100vh;  /* Full viewport height */
+        }
 
-  <td style="width: 65%; height: 50vh; vertical-align: top; text-align: left;">
-    <h3 style="font-weight: bold;"><u>Top concerning active tables by Mean Lag:</u></h3>
-    <div style="display: flex; align-items: center; height: 100%;">
-      <img src="data:image/png;base64,{{ line_chart }}" 
-           alt="Top N Tables by Mean Lag" 
-           style="max-height: 100%; width: auto;" />
+        /* Left pane for pie chart */
+        .left-pane {
+            width: 40%;  /* Pie chart takes 40% */
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            border-right: 2px solid #ccc;  /* Optional: add a separator */
+        }
+
+        /* Right pane for line chart */
+        .right-pane {
+            width: 60%;  /* Line graph takes 60% */
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+
+        img {
+            max-width: 100%;
+            max-height: 90vh; /* Scale image but maintain aspect ratio */
+        }
+    </style>
+</head>
+<body>
+
+    <h2 style="text-align: center;">EFONT Dynamic Table Refresh Status</h2>
+
+    <div class="container">
+        <!-- Left: Pie Chart -->
+        <div class="left-pane">
+            <h3 style="font-weight: bold;"><u>Overall active/suspended tables:</u></h3>
+            <img src="data:image/png;base64,{{ pie_chart }}" alt="Table Refresh Status Pie Chart"/>
+        </div>
+
+        <!-- Right: Line Chart -->
+        <div class="right-pane">
+            <h3 style="font-weight: bold;"><u>Top concerning active tables by Mean Lag:</u></h3>
+            <img src="data:image/png;base64,{{ line_chart }}" alt="Top N Tables by Mean Lag"/>
+        </div>
     </div>
-  </td>
-</tr>
+
+</body>
+</html>
