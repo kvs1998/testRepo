@@ -1,37 +1,50 @@
 import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
 import pandas as pd
 
-# Example Data (Replace with actual Snowflake Data)
-data = {
-    "table_id": [1, 1, 1, 2, 2, 3, 3, 3],  # Same table across executions
-    "sub_table_id": [1, 2, 3, 1, 2, 1, 2, 3],  # Latest execution is 1
-    "mean_lag_sec": [5000, 5500, 6000, 1000, 1200, 700, 800, 900],
-    "target_lag_sec": [7000, 7500, 8000, 1200, 1400, 900, 950, 1000]
-}
+# Example data (some tables missing in some executions)
+tables = [1, 7, 8, 9, 12]  # Full set of table IDs
+execution_1 = [12000, 8000, 3000, 4000, np.nan]  # Table 12 was missing
+execution_2 = [11000, 7500, 3500, np.nan, 5000]  # Table 9 missing
+execution_3 = [10000, 7000, np.nan, np.nan, 5500]  # Tables 8 & 9 missing
+target_lag = [7200, 7200, 7200, 7200, 7200]  # Target lag is constant
 
-df = pd.DataFrame(data)
+# Convert to DataFrame for easier handling
+df = pd.DataFrame({
+    "Table_ID": tables,
+    "Execution_1": execution_1,
+    "Execution_2": execution_2,
+    "Execution_3": execution_3,
+    "Target_Lag": target_lag
+}).set_index("Table_ID")
 
-# Pivot the data to get time trends
-pivot_mean_lag = df.pivot(index="table_id", columns="sub_table_id", values="mean_lag_sec")
-pivot_target_lag = df.pivot(index="table_id", columns="sub_table_id", values="target_lag_sec")
+# Sort by latest known lag (Execution 3 first, fallback to Execution 2, then Execution 1)
+df = df.sort_values(by=["Execution_3", "Execution_2", "Execution_1"], ascending=False)
 
-# Sort by latest lag (sub_table_id=1) for top tables
-pivot_mean_lag = pivot_mean_lag.sort_values(by=1, ascending=False).head(10)
-pivot_target_lag = pivot_target_lag.loc[pivot_mean_lag.index]  # Keep same order
+# Set style
+sns.set_style("whitegrid")
+palette = sns.color_palette("muted", 3)
 
-# Plotting
 fig, ax = plt.subplots(figsize=(10, 5))
 
-for sub_id in [3, 2, 1]:  # Show trends from oldest to newest
-    ax.plot(pivot_mean_lag.index, pivot_mean_lag[sub_id], marker="o", label=f"Execution {sub_id} - Mean Lag")
+# Plot each execution, ignoring missing values (will break line for missing points)
+ax.plot(df.index, df["Execution_3"], label="Execution 3 - Mean Lag", color=palette[0], marker='o', markersize=5, linewidth=1)
+ax.plot(df.index, df["Execution_2"], label="Execution 2 - Mean Lag", color=palette[1], marker='s', markersize=5, linewidth=1)
+ax.plot(df.index, df["Execution_1"], label="Execution 1 - Mean Lag", color=palette[2], marker='^', markersize=5, linewidth=1)
 
-ax.plot(pivot_target_lag.index, pivot_target_lag[1], "r--s", label="Latest Target Lag")
+# Plot Target Lag as a dashed line
+ax.plot(df.index, df["Target_Lag"], label="Latest Target Lag", color='red', linestyle='dashed', marker='s', markersize=5, linewidth=1)
 
-ax.set_xticks(pivot_mean_lag.index)  # Ensure X-axis remains continuous
-ax.set_xlabel("Tables (IDs)")
-ax.set_ylabel("Lag (seconds)")
-ax.set_title("Top 10 Tables by Mean Lag Trends (Last 3 Executions)")
-ax.legend()
-ax.grid(True)
+# Improve readability
+ax.set_title("Top 10 Tables by Mean Lag Trends (Last 3 Executions)", fontsize=14, fontweight='bold')
+ax.set_xlabel("Tables (IDs)", fontsize=12)
+ax.set_ylabel("Lag (seconds)", fontsize=12)
+
+# Adjust legend
+ax.legend(loc="upper right", fontsize="small", frameon=False)
+
+# Subtle gridlines
+ax.grid(True, linestyle="--", alpha=0.6)
 
 plt.show()
