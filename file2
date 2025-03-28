@@ -1,1 +1,37 @@
-This is file 2.
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+
+# Sample Data: Each row represents a table's lag at different execution times
+data = {
+    "table_id": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+    "lag_exec_1": [12000, 8000, 1500, 1700, 100, 500, 2500, 3000, np.nan, np.nan],  # Latest execution
+    "lag_exec_2": [10000, 7000, 1600, 1800, 200, 600, 2300, 2900, 500, np.nan],  # Previous execution
+    "lag_exec_3": [11000, 7500, 1400, 1750, 150, 550, 2600, 3100, 600, 900],  # Oldest execution
+}
+
+df = pd.DataFrame(data)
+
+# Filter top N tables based on the latest execution
+N = 10
+df_sorted = df.sort_values(by="lag_exec_1", ascending=False).head(N)
+
+# Ensure tables that were in previous top N persist
+df_sorted.fillna(0, inplace=True)  # Missing values become 0
+
+# Plot
+fig, ax = plt.subplots(figsize=(10, 5))
+x = np.arange(1, len(df_sorted) + 1)
+
+for i, col in enumerate(["lag_exec_1", "lag_exec_2", "lag_exec_3"]):
+    ax.plot(x, df_sorted[col], marker='o', label=f"Execution {3 - i}")
+
+ax.set_xticks(x)
+ax.set_xticklabels(df_sorted["table_id"])
+ax.set_xlabel("Tables (IDs)")
+ax.set_ylabel("Lag (seconds)")
+ax.set_title("Top Lag Trends Over Last 3 Executions")
+ax.legend()
+ax.grid(True)
+
+plt.show()
