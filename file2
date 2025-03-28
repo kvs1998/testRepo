@@ -48,3 +48,22 @@ ax.legend(loc="upper right", fontsize="small", frameon=False)
 ax.grid(True, linestyle="--", alpha=0.6)
 
 plt.show()
+
+
+<tr>
+  <td style="width: 40%; height: 50vh; vertical-align: top; text-align: left;">
+    <h3 style="font-weight: bold;"><u>Overall active/suspended tables:</u></h3>
+    <img src="data:image/png;base64,{{ pie_chart }}" 
+         alt="Table Refresh Status Pie Chart" 
+         style="max-height: 100%; width: auto;" />
+  </td>
+
+  <td style="width: 65%; height: 50vh; vertical-align: top; text-align: left;">
+    <h3 style="font-weight: bold;"><u>Top concerning active tables by Mean Lag:</u></h3>
+    <div style="display: flex; align-items: center; height: 100%;">
+      <img src="data:image/png;base64,{{ line_chart }}" 
+           alt="Top N Tables by Mean Lag" 
+           style="max-height: 100%; width: auto;" />
+    </div>
+  </td>
+</tr>
