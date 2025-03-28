@@ -1,58 +1,41 @@
 import matplotlib.pyplot as plt
-import numpy as np
+import pandas as pd
 
-# Sample list of dictionaries representing your data
+# Sample list of dictionaries containing table metadata
 data = [
-    {"table_id": "T1", "sub_table_id": 1, "target_lag": 50, "mean_lag": 60},
-    {"table_id": "T1", "sub_table_id": 2, "target_lag": 50, "mean_lag": 55},
-    {"table_id": "T1", "sub_table_id": 3, "target_lag": 50, "mean_lag": 53},
-    {"table_id": "T2", "sub_table_id": 1, "target_lag": 30, "mean_lag": 35},
-    {"table_id": "T2", "sub_table_id": 2, "target_lag": 30, "mean_lag": 33},
-    {"table_id": "T2", "sub_table_id": 3, "target_lag": 30, "mean_lag": 29},
-    {"table_id": "T3", "sub_table_id": 1, "target_lag": 20, "mean_lag": 22},
-    {"table_id": "T3", "sub_table_id": 2, "target_lag": 20, "mean_lag": 21},
-    {"table_id": "T3", "sub_table_id": 3, "target_lag": 20, "mean_lag": 19},
+    {'table_id': 'T1', 'sub_table_id': 1, 'target_lag': 10, 'mean_lag': 12, 'extra_col': 'ignore'},
+    {'table_id': 'T1', 'sub_table_id': 2, 'target_lag': 10, 'mean_lag': 15, 'extra_col': 'ignore'},
+    {'table_id': 'T1', 'sub_table_id': 3, 'target_lag': 10, 'mean_lag': 9, 'extra_col': 'ignore'},
+    {'table_id': 'T2', 'sub_table_id': 1, 'target_lag': 8, 'mean_lag': 7, 'extra_col': 'ignore'},
+    {'table_id': 'T2', 'sub_table_id': 2, 'target_lag': 8, 'mean_lag': 10, 'extra_col': 'ignore'},
+    {'table_id': 'T2', 'sub_table_id': 3, 'target_lag': 8, 'mean_lag': 9, 'extra_col': 'ignore'},
+    {'table_id': 'T3', 'sub_table_id': 1, 'target_lag': 5, 'mean_lag': 6, 'extra_col': 'ignore'},
+    {'table_id': 'T3', 'sub_table_id': 2, 'target_lag': 5, 'mean_lag': 5, 'extra_col': 'ignore'},
+    {'table_id': 'T3', 'sub_table_id': 3, 'target_lag': 5, 'mean_lag': 7, 'extra_col': 'ignore'}
 ]
 
-# Organizing data
-table_ids = sorted(set(d["table_id"] for d in data))
-sub_table_ids = sorted(set(d["sub_table_id"] for d in data))[-3:]  # Last 3 execution cycles
+# Convert to DataFrame, keeping only relevant columns dynamically
+required_columns = {'table_id', 'sub_table_id', 'target_lag', 'mean_lag'}
+df = pd.DataFrame(data).filter(items=required_columns)
 
-# Prepare dictionary to store values
-mean_lags = {sub_id: [] for sub_id in sub_table_ids}
-target_lags = {}
+# Get the latest target lag per table
+latest_target_lag = df.groupby('table_id')['target_lag'].last()
 
-for table_id in table_ids:
-    latest_target_lag = None
-    for sub_table_id in sub_table_ids:
-        entry = next((d for d in data if d["table_id"] == table_id and d["sub_table_id"] == sub_table_id), None)
-        if entry:
-            mean_lags[sub_table_id].append(entry["mean_lag"])
-            latest_target_lag = entry["target_lag"]
-        else:
-            mean_lags[sub_table_id].append(np.nan)  # Missing values as NaN
+# Pivot table to get execution cycles as columns
+df_pivot = df.pivot(index='table_id', columns='sub_table_id', values='mean_lag')
 
-    target_lags[table_id] = latest_target_lag
-
-# Plot the data
+# Plot
 fig, ax = plt.subplots(figsize=(10, 5))
+for sub_table_id in df_pivot.columns:
+    ax.plot(df_pivot.index, df_pivot[sub_table_id], marker='o', linestyle='-', label=f'Execution {sub_table_id}')
 
-# Plot mean lags for the last three execution cycles
-colors = ['b', 'g', 'r']
-for idx, sub_table_id in enumerate(sub_table_ids):
-    ax.plot(table_ids, mean_lags[sub_table_id], marker='o', linestyle='-', color=colors[idx], label=f"Mean Lag (Exec {sub_table_id})")
+# Add target lag line
+ax.plot(latest_target_lag.index, latest_target_lag.values, linestyle='--', color='black', label='Target Lag')
 
-# Plot target lags as a dashed black line
-ax.plot(table_ids, [target_lags[t] for t in table_ids], marker='x', linestyle='--', color='k', label="Target Lag")
-
-# Labels and title
 ax.set_xlabel("Table ID")
-ax.set_ylabel("Lag Time")
-ax.set_title("Table Lag Trends Over Last 3 Executions")
+ax.set_ylabel("Lag")
+ax.set_title("Mean Lag Trends vs Target Lag")
 ax.legend()
-ax.grid(True)
-
-# Show the plot
 plt.xticks(rotation=45)
+plt.grid()
 plt.show()
-
