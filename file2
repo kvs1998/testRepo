@@ -1,110 +1,58 @@
 import matplotlib.pyplot as plt
-import seaborn as sns
 import numpy as np
-import pandas as pd
 
-# Example data (some tables missing in some executions)
-tables = [1, 7, 8, 9, 12]  # Full set of table IDs
-execution_1 = [12000, 8000, 3000, 4000, np.nan]  # Table 12 was missing
-execution_2 = [11000, 7500, 3500, np.nan, 5000]  # Table 9 missing
-execution_3 = [10000, 7000, np.nan, np.nan, 5500]  # Tables 8 & 9 missing
-target_lag = [7200, 7200, 7200, 7200, 7200]  # Target lag is constant
+# Sample list of dictionaries representing your data
+data = [
+    {"table_id": "T1", "sub_table_id": 1, "target_lag": 50, "mean_lag": 60},
+    {"table_id": "T1", "sub_table_id": 2, "target_lag": 50, "mean_lag": 55},
+    {"table_id": "T1", "sub_table_id": 3, "target_lag": 50, "mean_lag": 53},
+    {"table_id": "T2", "sub_table_id": 1, "target_lag": 30, "mean_lag": 35},
+    {"table_id": "T2", "sub_table_id": 2, "target_lag": 30, "mean_lag": 33},
+    {"table_id": "T2", "sub_table_id": 3, "target_lag": 30, "mean_lag": 29},
+    {"table_id": "T3", "sub_table_id": 1, "target_lag": 20, "mean_lag": 22},
+    {"table_id": "T3", "sub_table_id": 2, "target_lag": 20, "mean_lag": 21},
+    {"table_id": "T3", "sub_table_id": 3, "target_lag": 20, "mean_lag": 19},
+]
 
-# Convert to DataFrame for easier handling
-df = pd.DataFrame({
-    "Table_ID": tables,
-    "Execution_1": execution_1,
-    "Execution_2": execution_2,
-    "Execution_3": execution_3,
-    "Target_Lag": target_lag
-}).set_index("Table_ID")
+# Organizing data
+table_ids = sorted(set(d["table_id"] for d in data))
+sub_table_ids = sorted(set(d["sub_table_id"] for d in data))[-3:]  # Last 3 execution cycles
 
-# Sort by latest known lag (Execution 3 first, fallback to Execution 2, then Execution 1)
-df = df.sort_values(by=["Execution_3", "Execution_2", "Execution_1"], ascending=False)
+# Prepare dictionary to store values
+mean_lags = {sub_id: [] for sub_id in sub_table_ids}
+target_lags = {}
 
-# Set style
-sns.set_style("whitegrid")
-palette = sns.color_palette("muted", 3)
+for table_id in table_ids:
+    latest_target_lag = None
+    for sub_table_id in sub_table_ids:
+        entry = next((d for d in data if d["table_id"] == table_id and d["sub_table_id"] == sub_table_id), None)
+        if entry:
+            mean_lags[sub_table_id].append(entry["mean_lag"])
+            latest_target_lag = entry["target_lag"]
+        else:
+            mean_lags[sub_table_id].append(np.nan)  # Missing values as NaN
 
+    target_lags[table_id] = latest_target_lag
+
+# Plot the data
 fig, ax = plt.subplots(figsize=(10, 5))
 
-# Plot each execution, ignoring missing values (will break line for missing points)
-ax.plot(df.index, df["Execution_3"], label="Execution 3 - Mean Lag", color=palette[0], marker='o', markersize=5, linewidth=1)
-ax.plot(df.index, df["Execution_2"], label="Execution 2 - Mean Lag", color=palette[1], marker='s', markersize=5, linewidth=1)
-ax.plot(df.index, df["Execution_1"], label="Execution 1 - Mean Lag", color=palette[2], marker='^', markersize=5, linewidth=1)
+# Plot mean lags for the last three execution cycles
+colors = ['b', 'g', 'r']
+for idx, sub_table_id in enumerate(sub_table_ids):
+    ax.plot(table_ids, mean_lags[sub_table_id], marker='o', linestyle='-', color=colors[idx], label=f"Mean Lag (Exec {sub_table_id})")
 
-# Plot Target Lag as a dashed line
-ax.plot(df.index, df["Target_Lag"], label="Latest Target Lag", color='red', linestyle='dashed', marker='s', markersize=5, linewidth=1)
+# Plot target lags as a dashed black line
+ax.plot(table_ids, [target_lags[t] for t in table_ids], marker='x', linestyle='--', color='k', label="Target Lag")
 
-# Improve readability
-ax.set_title("Top 10 Tables by Mean Lag Trends (Last 3 Executions)", fontsize=14, fontweight='bold')
-ax.set_xlabel("Tables (IDs)", fontsize=12)
-ax.set_ylabel("Lag (seconds)", fontsize=12)
+# Labels and title
+ax.set_xlabel("Table ID")
+ax.set_ylabel("Lag Time")
+ax.set_title("Table Lag Trends Over Last 3 Executions")
+ax.legend()
+ax.grid(True)
 
-# Adjust legend
-ax.legend(loc="upper right", fontsize="small", frameon=False)
-
-# Subtle gridlines
-ax.grid(True, linestyle="--", alpha=0.6)
-
+# Show the plot
+plt.xticks(rotation=45)
 plt.show()
 
-
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>EFONT Dynamic Table Refresh Status</title>
-    <style>
-        /* Container to hold both charts */
-        .container {
-            display: flex;  /* Side-by-side layout */
-            height: 100vh;  /* Full viewport height */
-        }
-
-        /* Left pane for pie chart */
-        .left-pane {
-            width: 40%;  /* Pie chart takes 40% */
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            border-right: 2px solid #ccc;  /* Optional: add a separator */
-        }
-
-        /* Right pane for line chart */
-        .right-pane {
-            width: 60%;  /* Line graph takes 60% */
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-        }
-
-        img {
-            max-width: 100%;
-            max-height: 90vh; /* Scale image but maintain aspect ratio */
-        }
-    </style>
-</head>
-<body>
-
-    <h2 style="text-align: center;">EFONT Dynamic Table Refresh Status</h2>
-
-    <div class="container">
-        <!-- Left: Pie Chart -->
-        <div class="left-pane">
-            <h3 style="font-weight: bold;"><u>Overall active/suspended tables:</u></h3>
-            <img src="data:image/png;base64,{{ pie_chart }}" alt="Table Refresh Status Pie Chart"/>
-        </div>
-
-        <!-- Right: Line Chart -->
-        <div class="right-pane">
-            <h3 style="font-weight: bold;"><u>Top concerning active tables by Mean Lag:</u></h3>
-            <img src="data:image/png;base64,{{ line_chart }}" alt="Top N Tables by Mean Lag"/>
-        </div>
-    </div>
-
-</body>
-</html>
