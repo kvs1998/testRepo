@@ -44,7 +44,6 @@ plt.show()
 
 
 
-
 <!DOCTYPE html>
 <html>
 <head>
@@ -70,12 +69,15 @@ plt.show()
             color: white;
         }
 
-        /* Dropdown Styling */
         select {
             width: 100%;
             padding: 5px;
-            border: 1px solid #ddd;
             font-size: 14px;
+        }
+
+        /* Highlighting filtered rows */
+        tr.filtered {
+            display: none;
         }
     </style>
 </head>
@@ -83,70 +85,132 @@ plt.show()
 
     <h2>Table Status Report</h2>
 
-    <table>
-        <tr>
-            <th>#</th>
-            <th>Table Id</th>
-            <th>Database Name</th>
-            <th>Schema Name</th>
-            <th>Table Name</th>
-            <th>State</th>
-            <th>Target Lag (sec)</th>
-            <th>Mean Lag (sec)</th>
-            <th>Max Lag (sec)</th>
-            <th>Within Target Ratio</th>
-            <th>Last Refresh State</th>
-        </tr>
-        {% for table in tables %}
-        <tr>
-            <td>{{ loop.index }}</td>
-            <td>
-                <select>
-                    <option value="{{ table.table_id }}">{{ table.table_id }}</option>
-                </select>
-            </td>
-            <td>
-                <select>
-                    <option value="{{ table.database_name }}">{{ table.database_name }}</option>
-                </select>
-            </td>
-            <td>
-                <select>
-                    <option value="{{ table.schema_name }}">{{ table.schema_name }}</option>
-                </select>
-            </td>
-            <td>
-                <select>
-                    <option value="{{ table.table_name }}">{{ table.table_name }}</option>
-                </select>
-            </td>
-            <td>
-                <select>
-                    <option value="{{ table.state }}">{{ table.state }}</option>
-                </select>
-            </td>
-            <td>
-                <select>
-                    <option value="{{ table.target_lag }}">{{ table.target_lag }}</option>
-                </select>
-            </td>
-            <td>{{ table.mean_lag }}</td>
-            <td>{{ table.max_lag }}</td>
-            <td style="background-color: 
-                {% if table.within_target_ratio < 0.5 %} orange 
-                {% elif table.within_target_ratio < 0.95 %} lightgreen 
-                {% else %} green 
-                {% endif %}">
-                {{ table.within_target_ratio }}
-            </td>
-            <td>
-                <select>
-                    <option value="{{ table.last_refresh_state }}">{{ table.last_refresh_state }}</option>
-                </select>
-            </td>
-        </tr>
-        {% endfor %}
+    <table id="dataTable">
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>
+                    <select id="tableIdFilter" onchange="filterTable()">
+                        <option value="">All</option>
+                        {% for table in tables | unique(attribute='table_id') %}
+                        <option value="{{ table.table_id }}">{{ table.table_id }}</option>
+                        {% endfor %}
+                    </select>
+                </th>
+                <th>
+                    <select id="databaseFilter" onchange="filterTable()">
+                        <option value="">All</option>
+                        {% for table in tables | unique(attribute='database_name') %}
+                        <option value="{{ table.database_name }}">{{ table.database_name }}</option>
+                        {% endfor %}
+                    </select>
+                </th>
+                <th>
+                    <select id="schemaFilter" onchange="filterTable()">
+                        <option value="">All</option>
+                        {% for table in tables | unique(attribute='schema_name') %}
+                        <option value="{{ table.schema_name }}">{{ table.schema_name }}</option>
+                        {% endfor %}
+                    </select>
+                </th>
+                <th>
+                    <select id="tableNameFilter" onchange="filterTable()">
+                        <option value="">All</option>
+                        {% for table in tables | unique(attribute='table_name') %}
+                        <option value="{{ table.table_name }}">{{ table.table_name }}</option>
+                        {% endfor %}
+                    </select>
+                </th>
+                <th>
+                    <select id="stateFilter" onchange="filterTable()">
+                        <option value="">All</option>
+                        {% for table in tables | unique(attribute='state') %}
+                        <option value="{{ table.state }}">{{ table.state }}</option>
+                        {% endfor %}
+                    </select>
+                </th>
+                <th>
+                    <select id="targetLagFilter" onchange="filterTable()">
+                        <option value="">All</option>
+                        {% for table in tables | unique(attribute='target_lag') %}
+                        <option value="{{ table.target_lag }}">{{ table.target_lag }}</option>
+                        {% endfor %}
+                    </select>
+                </th>
+                <th>Mean Lag (sec)</th>
+                <th>Max Lag (sec)</th>
+                <th>Within Target Ratio</th>
+                <th>
+                    <select id="refreshStateFilter" onchange="filterTable()">
+                        <option value="">All</option>
+                        {% for table in tables | unique(attribute='last_refresh_state') %}
+                        <option value="{{ table.last_refresh_state }}">{{ table.last_refresh_state }}</option>
+                        {% endfor %}
+                    </select>
+                </th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for table in tables %}
+            <tr>
+                <td>{{ loop.index }}</td>
+                <td class="tableId">{{ table.table_id }}</td>
+                <td class="database">{{ table.database_name }}</td>
+                <td class="schema">{{ table.schema_name }}</td>
+                <td class="tableName">{{ table.table_name }}</td>
+                <td class="state">{{ table.state }}</td>
+                <td class="targetLag">{{ table.target_lag }}</td>
+                <td>{{ table.mean_lag }}</td>
+                <td>{{ table.max_lag }}</td>
+                <td style="background-color: 
+                    {% if table.within_target_ratio < 0.5 %} orange 
+                    {% elif table.within_target_ratio < 0.95 %} lightgreen 
+                    {% else %} green 
+                    {% endif %}">
+                    {{ table.within_target_ratio }}
+                </td>
+                <td class="refreshState">{{ table.last_refresh_state }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
     </table>
+
+    <script>
+        function filterTable() {
+            let table = document.getElementById("dataTable");
+            let rows = table.getElementsByTagName("tr");
+            
+            let tableIdFilter = document.getElementById("tableIdFilter").value.toLowerCase();
+            let databaseFilter = document.getElementById("databaseFilter").value.toLowerCase();
+            let schemaFilter = document.getElementById("schemaFilter").value.toLowerCase();
+            let tableNameFilter = document.getElementById("tableNameFilter").value.toLowerCase();
+            let stateFilter = document.getElementById("stateFilter").value.toLowerCase();
+            let targetLagFilter = document.getElementById("targetLagFilter").value.toLowerCase();
+            let refreshStateFilter = document.getElementById("refreshStateFilter").value.toLowerCase();
+
+            for (let i = 1; i < rows.length; i++) {
+                let row = rows[i];
+                let tableId = row.getElementsByClassName("tableId")[0].textContent.toLowerCase();
+                let database = row.getElementsByClassName("database")[0].textContent.toLowerCase();
+                let schema = row.getElementsByClassName("schema")[0].textContent.toLowerCase();
+                let tableName = row.getElementsByClassName("tableName")[0].textContent.toLowerCase();
+                let state = row.getElementsByClassName("state")[0].textContent.toLowerCase();
+                let targetLag = row.getElementsByClassName("targetLag")[0].textContent.toLowerCase();
+                let refreshState = row.getElementsByClassName("refreshState")[0].textContent.toLowerCase();
+
+                let showRow = 
+                    (tableIdFilter === "" || tableId.includes(tableIdFilter)) &&
+                    (databaseFilter === "" || database.includes(databaseFilter)) &&
+                    (schemaFilter === "" || schema.includes(schemaFilter)) &&
+                    (tableNameFilter === "" || tableName.includes(tableNameFilter)) &&
+                    (stateFilter === "" || state.includes(stateFilter)) &&
+                    (targetLagFilter === "" || targetLag.includes(targetLagFilter)) &&
+                    (refreshStateFilter === "" || refreshState.includes(refreshStateFilter));
+
+                row.style.display = showRow ? "" : "none";
+            }
+        }
+    </script>
 
 </body>
 </html>
