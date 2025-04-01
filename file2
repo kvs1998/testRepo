@@ -1,41 +1,42 @@
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 
-# Sample list of dictionaries containing table metadata
-data = [
-    {'table_id': 'T1', 'sub_table_id': 1, 'target_lag': 10, 'mean_lag': 12, 'extra_col': 'ignore'},
-    {'table_id': 'T1', 'sub_table_id': 2, 'target_lag': 10, 'mean_lag': 15, 'extra_col': 'ignore'},
-    {'table_id': 'T1', 'sub_table_id': 3, 'target_lag': 10, 'mean_lag': 9, 'extra_col': 'ignore'},
-    {'table_id': 'T2', 'sub_table_id': 1, 'target_lag': 8, 'mean_lag': 7, 'extra_col': 'ignore'},
-    {'table_id': 'T2', 'sub_table_id': 2, 'target_lag': 8, 'mean_lag': 10, 'extra_col': 'ignore'},
-    {'table_id': 'T2', 'sub_table_id': 3, 'target_lag': 8, 'mean_lag': 9, 'extra_col': 'ignore'},
-    {'table_id': 'T3', 'sub_table_id': 1, 'target_lag': 5, 'mean_lag': 6, 'extra_col': 'ignore'},
-    {'table_id': 'T3', 'sub_table_id': 2, 'target_lag': 5, 'mean_lag': 5, 'extra_col': 'ignore'},
-    {'table_id': 'T3', 'sub_table_id': 3, 'target_lag': 5, 'mean_lag': 7, 'extra_col': 'ignore'}
-]
+# Sample data (based on the image provided)
+data = {
+    "TABLE_ID": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+    "EXEC1_TARGET_LAG": [7200, 120, 120, 120, 120, 300, 7200, 7200, 7200, 7200],
+    "EXEC1_MEAN_LAG": [15197, 1308, 1179, 76, 73, 101, 15197, 3886, 3159, 3105],
+    "EXEC2_TARGET_LAG": [7200, 120, 120, 120, 120, 300, 7200, 7200, 7200, 7200],
+    "EXEC2_MEAN_LAG": [15197, 1308, 1180, 76, 73, 101, 15197, 4048, 3142, 3085],
+    "EXEC3_TARGET_LAG": [7200, 120, 120, 120, 120, 300, 7200, 7200, 7200, 7200],
+    "EXEC3_MEAN_LAG": [12659, 1294, 1176, 81, 74, 101, 12659, 4048, 3142, 3085],
+}
 
-# Convert to DataFrame, keeping only relevant columns dynamically
-required_columns = {'table_id', 'sub_table_id', 'target_lag', 'mean_lag'}
-df = pd.DataFrame(data).filter(items=required_columns)
+df = pd.DataFrame(data)
 
-# Get the latest target lag per table
-latest_target_lag = df.groupby('table_id')['target_lag'].last()
+# Set color scheme
+colors = ['blue', 'green', 'orange']
 
-# Pivot table to get execution cycles as columns
-df_pivot = df.pivot(index='table_id', columns='sub_table_id', values='mean_lag')
+# Plot lines for EXEC1, EXEC2, EXEC3
+plt.figure(figsize=(12, 6))
+for i, exec_num in enumerate(["EXEC1", "EXEC2", "EXEC3"]):
+    plt.plot(df["TABLE_ID"], df[f"{exec_num}_MEAN_LAG"], 
+             color=colors[i], linestyle='-', label=f"{exec_num} MEAN LAG")
+    plt.plot(df["TABLE_ID"], df[f"{exec_num}_TARGET_LAG"], 
+             color=colors[i], linestyle='--', alpha=0.6, label=f"{exec_num} TARGET LAG")
 
-# Plot
-fig, ax = plt.subplots(figsize=(10, 5))
-for sub_table_id in df_pivot.columns:
-    ax.plot(df_pivot.index, df_pivot[sub_table_id], marker='o', linestyle='-', label=f'Execution {sub_table_id}')
+    # Mark target lags with square markers
+    plt.scatter(df["TABLE_ID"], df[f"{exec_num}_TARGET_LAG"], color=colors[i], marker='s', alpha=0.6)
 
-# Add target lag line
-ax.plot(latest_target_lag.index, latest_target_lag.values, linestyle='--', color='black', label='Target Lag')
+# Highlight zero mean lag values with red 'X'
+zero_mean_mask = (df["EXEC1_MEAN_LAG"] == 0) & (df["EXEC2_MEAN_LAG"] == 0) & (df["EXEC3_MEAN_LAG"] == 0)
+plt.scatter(df.loc[zero_mean_mask, "TABLE_ID"], df.loc[zero_mean_mask, "EXEC1_MEAN_LAG"],
+            color='red', marker='x', s=100, label="Zero Mean Lag")
 
-ax.set_xlabel("Table ID")
-ax.set_ylabel("Lag")
-ax.set_title("Mean Lag Trends vs Target Lag")
-ax.legend()
-plt.xticks(rotation=45)
-plt.grid()
+plt.xlabel("TABLE_ID")
+plt.ylabel("Lag Values")
+plt.title("Mean Lag and Target Lag per Execution")
+plt.legend()
+plt.grid(True, linestyle='--', alpha=0.5)
 plt.show()
