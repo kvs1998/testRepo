@@ -45,33 +45,28 @@ plt.show()
 
 
 
-import matplotlib.pyplot as plt
-import numpy as np
+        /* Dropdown menu */
+        details {
+            background: #f9f9f9;
+            border: 1px solid #ddd;
+            margin: 5px 0;
+            padding: 10px;
+            cursor: pointer;
+        }
 
-# Line widths in decreasing order
-lw_exec1, lw_exec2, lw_exec3 = 2.5, 2, 1.5
+        summary {
+            font-weight: bold;
+            color: #0073e6;
+        }
 
-# Plot lines
-plt.plot(table_ids, exec1_mean_lag, 'b-', linewidth=lw_exec1, label="EXEC1 MEAN LAG")
-plt.plot(table_ids, exec1_target_lag, 'b--', linewidth=lw_exec1, label="EXEC1 TARGET LAG")
 
-plt.plot(table_ids, exec2_mean_lag, 'g-', linewidth=lw_exec2, label="EXEC2 MEAN LAG")
-plt.scatter(table_ids, exec2_target_lag, color='g', marker='s', label="EXEC2 TARGET LAG")
+   <!-- Dropdown Menus -->
+    <details>
+        <summary>View Details for Execution 1</summary>
+        <p>Execution 1 completed at {{ execution_1_time }} with status {{ execution_1_status }}</p>
+    </details>
 
-plt.plot(table_ids, exec3_mean_lag, 'orange', linewidth=lw_exec3, label="EXEC3 MEAN LAG")
-plt.scatter(table_ids, exec3_target_lag, color='orange', marker='s', label="EXEC3 TARGET LAG")
-
-# Highlight zero mean lag points
-for i, (m1, m2, m3) in enumerate(zip(exec1_mean_lag, exec2_mean_lag, exec3_mean_lag)):
-    if m1 == 0 and m2 == 0 and m3 == 0:
-        plt.scatter(table_ids[i], 0, color='red', marker='x', s=100, label="Zero Mean Lag")
-
-# Axis labels and title
-plt.xlabel("TABLE_ID")
-plt.ylabel("Lag Values")
-plt.title("Mean Lag and Target Lag per Execution")
-
-# Improve legend formatting
-plt.legend()
-plt.grid(True, linestyle="--", alpha=0.6)
-plt.xticks(table_ids)  # Ensuring discrete x-axis labels
+    <details>
+        <summary>View Details for Execution 2</summary>
+        <p>Execution 2 completed at {{ execution_2_time }} with status {{ execution_2_status }}</p>
+    </details>
