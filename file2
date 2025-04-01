@@ -45,28 +45,108 @@ plt.show()
 
 
 
-        /* Dropdown menu */
-        details {
-            background: #f9f9f9;
+<!DOCTYPE html>
+<html>
+<head>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th, td {
             border: 1px solid #ddd;
-            margin: 5px 0;
             padding: 10px;
-            cursor: pointer;
+            text-align: left;
+            height: 40px;
         }
 
-        summary {
-            font-weight: bold;
-            color: #0073e6;
+        th {
+            background-color: #0073e6;
+            color: white;
         }
 
+        /* Dropdown Styling */
+        select {
+            width: 100%;
+            padding: 5px;
+            border: 1px solid #ddd;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
 
-   <!-- Dropdown Menus -->
-    <details>
-        <summary>View Details for Execution 1</summary>
-        <p>Execution 1 completed at {{ execution_1_time }} with status {{ execution_1_status }}</p>
-    </details>
+    <h2>Table Status Report</h2>
 
-    <details>
-        <summary>View Details for Execution 2</summary>
-        <p>Execution 2 completed at {{ execution_2_time }} with status {{ execution_2_status }}</p>
-    </details>
+    <table>
+        <tr>
+            <th>#</th>
+            <th>Table Id</th>
+            <th>Database Name</th>
+            <th>Schema Name</th>
+            <th>Table Name</th>
+            <th>State</th>
+            <th>Target Lag (sec)</th>
+            <th>Mean Lag (sec)</th>
+            <th>Max Lag (sec)</th>
+            <th>Within Target Ratio</th>
+            <th>Last Refresh State</th>
+        </tr>
+        {% for table in tables %}
+        <tr>
+            <td>{{ loop.index }}</td>
+            <td>
+                <select>
+                    <option value="{{ table.table_id }}">{{ table.table_id }}</option>
+                </select>
+            </td>
+            <td>
+                <select>
+                    <option value="{{ table.database_name }}">{{ table.database_name }}</option>
+                </select>
+            </td>
+            <td>
+                <select>
+                    <option value="{{ table.schema_name }}">{{ table.schema_name }}</option>
+                </select>
+            </td>
+            <td>
+                <select>
+                    <option value="{{ table.table_name }}">{{ table.table_name }}</option>
+                </select>
+            </td>
+            <td>
+                <select>
+                    <option value="{{ table.state }}">{{ table.state }}</option>
+                </select>
+            </td>
+            <td>
+                <select>
+                    <option value="{{ table.target_lag }}">{{ table.target_lag }}</option>
+                </select>
+            </td>
+            <td>{{ table.mean_lag }}</td>
+            <td>{{ table.max_lag }}</td>
+            <td style="background-color: 
+                {% if table.within_target_ratio < 0.5 %} orange 
+                {% elif table.within_target_ratio < 0.95 %} lightgreen 
+                {% else %} green 
+                {% endif %}">
+                {{ table.within_target_ratio }}
+            </td>
+            <td>
+                <select>
+                    <option value="{{ table.last_refresh_state }}">{{ table.last_refresh_state }}</option>
+                </select>
+            </td>
+        </tr>
+        {% endfor %}
+    </table>
+
+</body>
+</html>
