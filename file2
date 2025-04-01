@@ -48,39 +48,30 @@ plt.show()
 import matplotlib.pyplot as plt
 import numpy as np
 
-df = pd.DataFrame(data)
+# Line widths in decreasing order
+lw_exec1, lw_exec2, lw_exec3 = 2.5, 2, 1.5
 
-# Sort TABLE_ID to ensure correct plotting
-df = df.sort_values("TABLE_ID")
+# Plot lines
+plt.plot(table_ids, exec1_mean_lag, 'b-', linewidth=lw_exec1, label="EXEC1 MEAN LAG")
+plt.plot(table_ids, exec1_target_lag, 'b--', linewidth=lw_exec1, label="EXEC1 TARGET LAG")
 
-# Convert TABLE_ID to categorical (avoids decimal plotting)
-category_labels = df["TABLE_ID"].astype(str)
+plt.plot(table_ids, exec2_mean_lag, 'g-', linewidth=lw_exec2, label="EXEC2 MEAN LAG")
+plt.scatter(table_ids, exec2_target_lag, color='g', marker='s', label="EXEC2 TARGET LAG")
 
-# Create figure
-fig, ax = plt.subplots(figsize=(10, 5))
+plt.plot(table_ids, exec3_mean_lag, 'orange', linewidth=lw_exec3, label="EXEC3 MEAN LAG")
+plt.scatter(table_ids, exec3_target_lag, color='orange', marker='s', label="EXEC3 TARGET LAG")
 
-# Define line styles and colors
-exec_colors = ["blue", "green", "orange"]
-line_widths = [2.5, 2, 1.5]  # Decreasing order
-markers = ["o", "s", "D"]
+# Highlight zero mean lag points
+for i, (m1, m2, m3) in enumerate(zip(exec1_mean_lag, exec2_mean_lag, exec3_mean_lag)):
+    if m1 == 0 and m2 == 0 and m3 == 0:
+        plt.scatter(table_ids[i], 0, color='red', marker='x', s=100, label="Zero Mean Lag")
 
-# Plot Mean Lag lines
-for i, exec_num in enumerate(range(1, 4)):
-    ax.plot(category_labels, df[f"EXEC{exec_num}_MEAN_LAG"], label=f"EXEC{exec_num} MEAN LAG",
-            color=exec_colors[i], linestyle="-", linewidth=line_widths[i], zorder=3-i)
+# Axis labels and title
+plt.xlabel("TABLE_ID")
+plt.ylabel("Lag Values")
+plt.title("Mean Lag and Target Lag per Execution")
 
-# Plot Target Lag points (only EXEC1 as line, EXEC2 & EXEC3 as markers)
-ax.plot(category_labels, df["EXEC1_TARGET_LAG"], label="EXEC1 TARGET LAG", color="blue", linestyle="--", linewidth=2, zorder=4)
-ax.scatter(category_labels, df["EXEC2_TARGET_LAG"], label="EXEC2 TARGET LAG", color="green", marker="s", zorder=2)
-ax.scatter(category_labels, df["EXEC3_TARGET_LAG"], label="EXEC3 TARGET LAG", color="orange", marker="D", zorder=1)
-
-# Mark Zero Mean Lag with 'X' in red
-zero_mean_mask = (df[["EXEC1_MEAN_LAG", "EXEC2_MEAN_LAG", "EXEC3_MEAN_LAG"]] == 0).all(axis=1)
-ax.scatter(category_labels[zero_mean_mask], [0] * sum(zero_mean_mask), color='red', marker='x', s=100, label='Zero Mean Lag')
-
-# Labels and title
-ax.set_xlabel("TABLE_ID")
-ax.set_ylabel("Lag Values")
-ax.set_title("Mean Lag and Target Lag per Execution")
-ax.legend()
-ax.grid(True, linestyle='--', alpha=0.5)
+# Improve legend formatting
+plt.legend()
+plt.grid(True, linestyle="--", alpha=0.6)
+plt.xticks(table_ids)  # Ensuring discrete x-axis labels
