@@ -48,59 +48,43 @@ plt.show()
 import matplotlib.pyplot as plt
 import numpy as np
 
-# Sample data extracted from the image
+# Sample data (using the data extracted earlier - please ensure this matches your actual data)
 table_id = np.array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
 exec1_target_lag = np.array([120.0, 120.0, 120.0, 120.0, 120.0, 300.0, 7200.0, 7200.0, 7200.0, 7200.0])
 exec1_mean_lag = np.array([1308.0, 1179.0, 76.0, 73.0, 59.0, 101.0, 15397.0, 3886.0, 3159.0, 3105.0])
 exec2_target_lag = np.array([120.0, 120.0, 120.0, 120.0, 120.0, 300.0, 7200.0, 7200.0, 7200.0, 7200.0])
 exec2_mean_lag = np.array([1308.0, 1180.0, 76.0, 73.0, 59.0, 101.0, 15197.0, 3886.0, 3159.0, 3105.0])
-exec3_target_lag = np.array([120.0, 120.0, 120.0, 120.0, 120.006, 300.0, 7200.0, 7200.0, 7200.0, 7200.0])
-exec3_mean_lag = np.array([1294.0, 1178.0, 81.0, 74.0, 59.0, 101.0, 12659.0, 4048.0, 3142.0, 3085.0])
+exec3_target_lag = np.array([120.0, 120.0, 120.0, 120.006, 300.0, 7200.0, 7200.0, 7200.0, 7200.0, 7200.0])
+exec3_mean_lag = np.array([1294.0, 1178.0, 81.0, 74.0, 101.0, 12659.0, 4048.0, 3142.0, 3085.0, 59.0])
 
-# Define colors for each EXEC
-colors = ['blue', 'green', 'purple']
+# Create a figure with 3 subplots, one for each EXEC
+fig, axes = plt.subplots(3, 1, figsize=(10, 12), sharex=True)
+fig.suptitle('Mean Lag vs. Target Lag Over TABLE_IDs', fontsize=16)
 
-# Create the plot
-plt.figure(figsize=(12, 6))
+# Plot for EXEC1
+axes[0].plot(table_id, exec1_target_lag, label='Target Lag', color='blue', linestyle='-')
+axes[0].plot(table_id, exec1_mean_lag, label='Mean Lag', color='blue', linestyle='--')
+axes[0].set_title('EXEC1')
+axes[0].set_ylabel('Lag Value')
+axes[0].grid(True)
+axes[0].legend()
 
-# Plot EXEC1 lines
-plt.plot(table_id, exec1_target_lag, label='EXEC1_TARGET_LAG', color=colors[0], linestyle='-')
-plt.plot(table_id, exec1_mean_lag, label='EXEC1_MEAN_LAG', color=colors[0], linestyle='--')
+# Plot for EXEC2
+axes[1].plot(table_id, exec2_target_lag, label='Target Lag', color='green', linestyle='-')
+axes[1].plot(table_id, exec2_mean_lag, label='Mean Lag', color='green', linestyle='--')
+axes[1].set_title('EXEC2')
+axes[1].set_ylabel('Lag Value')
+axes[1].grid(True)
+axes[1].legend()
 
-# Plot EXEC2 target lag with markers
-plt.plot(table_id, exec2_target_lag, label='EXEC2_TARGET_LAG', color=colors[1], marker='o', linestyle='')
-# Plot EXEC2 mean lag
-plt.plot(table_id, exec2_mean_lag, label='EXEC2_MEAN_LAG', color=colors[1], linestyle='--')
+# Plot for EXEC3
+axes[2].plot(table_id, exec3_target_lag, label='Target Lag', color='purple', linestyle='-')
+axes[2].plot(table_id, exec3_mean_lag, label='Mean Lag', color='purple', linestyle='--')
+axes[2].set_title('EXEC3')
+axes[2].set_xlabel('TABLE_ID')
+axes[2].set_ylabel('Lag Value')
+axes[2].grid(True)
+axes[2].legend()
 
-# Plot EXEC3 target lag with markers
-plt.plot(table_id, exec3_target_lag, label='EXEC3_TARGET_LAG', color=colors[2], marker='^', linestyle='')
-# Plot EXEC3 mean lag
-plt.plot(table_id, exec3_mean_lag, label='EXEC3_MEAN_LAG', color=colors[2], linestyle='--')
-
-# Mark points where both mean lag values are 0.0 (adjust condition if needed)
-for i in range(len(table_id)):
-    if exec1_mean_lag[i] == 0.0 and exec2_mean_lag[i] == 0.0:
-        plt.plot(table_id[i], exec1_mean_lag[i], 'rx') # Mark on EXEC1 mean lag
-        plt.plot(table_id[i], exec2_mean_lag[i], 'rx') # Mark on EXEC2 mean lag
-    elif exec1_mean_lag[i] == 0.0 and exec3_mean_lag[i] == 0.0:
-        plt.plot(table_id[i], exec1_mean_lag[i], 'rx') # Mark on EXEC1 mean lag
-        plt.plot(table_id[i], exec3_mean_lag[i], 'rx') # Mark on EXEC3 mean lag
-    elif exec2_mean_lag[i] == 0.0 and exec3_mean_lag[i] == 0.0:
-        plt.plot(table_id[i], exec2_mean_lag[i], 'rx') # Mark on EXEC2 mean lag
-        plt.plot(table_id[i], exec3_mean_lag[i], 'rx') # Mark on EXEC3 mean lag
-    elif exec1_mean_lag[i] == 0.0:
-        plt.plot(table_id[i], exec1_mean_lag[i], 'rx')
-    elif exec2_mean_lag[i] == 0.0:
-        plt.plot(table_id[i], exec2_mean_lag[i], 'rx')
-    elif exec3_mean_lag[i] == 0.0:
-        plt.plot(table_id[i], exec3_mean_lag[i], 'rx')
-
-# Add labels and title
-plt.xlabel('TABLE_ID')
-plt.ylabel('Lag Value')
-plt.title('Target and Mean Lag Comparison for EXEC1, EXEC2, and EXEC3')
-plt.xticks(table_id)
-plt.legend()
-plt.grid(True)
-plt.tight_layout()
+plt.tight_layout(rect=[0, 0.03, 1, 0.95]) # Adjust layout to make room for suptitle
 plt.show()
