@@ -215,19 +215,11 @@ plt.show()
 </body>
 </html>
 
-<table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
-    <tr>
-        <!-- Left Pane: Pie Chart -->
-        <td width="50%" align="center" style="border-right: 2px solid #ccc; vertical-align: top;">
-            <h3 style="font-weight: bold;"><u>Overall active/suspended tables:</u></h3>
-            <img src="data:image/png;base64,{{ pie_chart }}" alt="Table Refresh Status Pie Chart" style="max-width: 100%; height: auto;">
-        </td>
-
-        <!-- Right Pane: Line Chart -->
-        <td width="50%" align="center" style="vertical-align: top;">
-            <h3 style="font-weight: bold;"><u>Top concerning active tables by Mean Lag:</u></h3>
-            <img src="data:image/png;base64,{{ line_chart }}" alt="Top N Tables by Mean Lag" style="max-width: 100%; height: auto;">
-        </td>
-    </tr>
-</table>
+            {% if row["Within Target Ratio"] < 0.6 %}
+                style="background-color: #fde6d6;" /* Light Peach */
+            {% elif row["Within Target Ratio"] < 0.9 %}
+                style="background-color: #dff0d8;" /* Soft Pastel Green */
+            {% else %}
+                style="background-color: #e6f7ff;" /* Very Light Blue */
+            {% endif %}
 
