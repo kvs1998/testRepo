@@ -51,26 +51,31 @@ zero_mean_mask = (df[["EXEC1_MEAN_LAG", "EXEC2_MEAN_LAG", "EXEC3_MEAN_LAG"]] == 
  from snowflake.snowpark.functions import col, to_date
  
 
+ from snowflake.snowpark import Session
+ from snowflake.snowpark.functions import col, to_date
+ 
+
  def main(session: Session):
-  # Construct the query against the DYNAMIC_TABLE_REFRESH_HISTORY view.
+  # Construct the query against the DYNAMIC_TABLE_REFRESH_HISTORY table function.
   # You can add filters (e.g., date range, specific table) as needed.
-  # Limiting results is highly recommended.
-  refresh_history_df = session.table("SNOWFLAKE.ACCOUNT_USAGE.DYNAMIC_TABLE_REFRESH_HISTORY") \
-  .filter(col("REFRESH_START_TIME") >= to_date("2024-01-01")) \
-  .limit(1000) # Always limit results from ACCOUNT_USAGE
+  # Limiting results is highly recommended.  The table function requires a limit.
+  refresh_history_df = session.table_function("dynamic_table_refresh_history")(
+  to_date("2023-01-01"),  # start_time
+  to_date("2024-01-01")   # end_time
+  ).limit(1000)
  
 
   # Select the columns you want to analyze.
   selected_df = refresh_history_df.select(
-  "DYNAMIC_TABLE_NAME",
-  "REFRESH_START_TIME",
-  "REFRESH_END_TIME",
-  "REFRESH_STATE",
-  "ELAPSED_DURATION",
-  "ROWS_PRODUCED",
-  "BYTES_SPILLED_TO_LOCAL",
-  "BYTES_SPILLED_TO_REMOTE",
-  "ERROR_MESSAGE" #Include error message if there were failures.
+  "name",            # The name of the dynamic table
+  "refresh_start_time",
+  "refresh_end_time",
+  "state",            # The state of the refresh
+  "duration",         # Duration in seconds
+  "rows",             # Rows produced by the refresh
+  "bytes_spilled_to_local",
+  "bytes_spilled_to_remote",
+  "error_message"      # Error message, if any
   )
  
 
