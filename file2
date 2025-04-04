@@ -45,9 +45,34 @@ plt.show()
 # Identify rows where all EXEC Mean Lags are zero
 zero_mean_mask = (df[["EXEC1_MEAN_LAG", "EXEC2_MEAN_LAG", "EXEC3_MEAN_LAG"]] == 0).all(axis=1)
 
-# ✅ Get the actual indices for filtering
-zero_indices = df.index[zero_mean_mask]
 
-# ✅ Scatter plot for zero mean lag
-ax.scatter(df.loc[zero_indices, "TABLE_ID"], [0] * len(zero_indices), 
-           color='red', marker='x', s=100, label='Zero Mean Lag', zorder=5)
+
+ from snowflake.snowpark import Session
+ from snowflake.snowpark.functions import col, to_date
+ 
+
+ def main(session: Session):
+  # Construct the query against the DYNAMIC_TABLE_REFRESH_HISTORY view.
+  # You can add filters (e.g., date range, specific table) as needed.
+  # Limiting results is highly recommended.
+  refresh_history_df = session.table("SNOWFLAKE.ACCOUNT_USAGE.DYNAMIC_TABLE_REFRESH_HISTORY") \
+  .filter(col("REFRESH_START_TIME") >= to_date("2024-01-01")) \
+  .limit(1000) # Always limit results from ACCOUNT_USAGE
+ 
+
+  # Select the columns you want to analyze.
+  selected_df = refresh_history_df.select(
+  "DYNAMIC_TABLE_NAME",
+  "REFRESH_START_TIME",
+  "REFRESH_END_TIME",
+  "REFRESH_STATE",
+  "ELAPSED_DURATION",
+  "ROWS_PRODUCED",
+  "BYTES_SPILLED_TO_LOCAL",
+  "BYTES_SPILLED_TO_REMOTE",
+  "ERROR_MESSAGE" #Include error message if there were failures.
+  )
+ 
+
+  selected_df.show()
+  #return selected_df.to_pandas() # for easier viewing
