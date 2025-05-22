@@ -1,0 +1,80 @@
+import snowflake.connector
+
+def insert_refresh_history(ctx, db_name, schema_name, table_name):
+    cs = ctx.cursor()
+    try:
+        # Step 0: Get the latest refresh_end_time from the history table
+        get_latest_time_query = f"""
+        SELECT MAX(REFRESH_END_TIME)
+        FROM {db_name}.{schema_name}.T_DT_REFRESH_HISTORY
+        WHERE DATABASE_NAME = %s
+        AND SCHEMA_NAME = %s
+        AND TABLE_NAME = %s
+        """
+        cs.execute(get_latest_time_query, (db_name.upper(), schema_name.upper(), table_name.upper()))
+        latest_refresh_time_row = cs.fetchone()
+        latest_refresh_time = latest_refresh_time_row[0]
+
+        # Step 1: Query refresh history (filter by latest_refresh_time)
+        query = f"""
+        SELECT
+            database_name,
+            schema_name,
+            name AS table_name,
+            state,
+            state_code,
+            state_message,
+            query_id,
+            data_timestamp,
+            refresh_start_time,
+            refresh_end_time,
+            completion_target,
+            statistics,
+            refresh_action,
+            refresh_trigger,
+            target_lag_sec
+        FROM TABLE(
+            {db_name}.information_schema.dynamic_table_refresh_history(
+                name => '{db_name}.{schema_name}.{table_name}',
+                data_timestamp_start => DATEADD('DAYS', -6, CURRENT_TIMESTAMP), -- Still keep a window for safety
+                result_limit => 10000
+            )
+        )
+        WHERE REFRESH_END_TIME > %s -- Filter based on the latest time
+        """
+
+        cs.execute(query, (latest_refresh_time,))
+        rows = cs.fetchall()
+
+        # Step 2: Insert into history table
+        if rows:
+            insert_sql = f"""
+            INSERT INTO {db_name}.{schema_name}.T_DT_REFRESH_HISTORY (
+                DATABASE_NAME, SCHEMA_NAME, TABLE_NAME,
+                STATE, STATE_CODE, STATE_MESSAGE, QUERY_ID,
+                DATA_TIMESTAMP, REFRESH_START_TIME, REFRESH_END_TIME,
+                COMPLETION_TARGET, STATISTICS, REFRESH_ACTION, REFRESH_TRIGGER, TARGET_LAG_SEC
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """
+            cs.executemany(insert_sql, rows)
+            print(f"✅ Inserted {len(rows)} new rows into T_DT_REFRESH_HISTORY")
+        else:
+            print("✅ No new refresh history found to insert.")
+
+    finally:
+        cs.close()
+
+# ... rest of your connection and function call
+
+
+
+ctx = snowflake.connector.connect(
+    user='YOUR_USER',
+    password='YOUR_PASSWORD',
+    account='YOUR_ACCOUNT',
+    warehouse='YOUR_WAREHOUSE',
+    database='YOUR_DATABASE',
+    schema='YOUR_SCHEMA'
+)
+
+insert_refresh_history(ctx, 'YOUR_DATABASE', 'YOUR_SCHEMA', 'YOUR_TABLE')
