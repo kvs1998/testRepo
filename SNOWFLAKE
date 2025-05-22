@@ -1,23 +1,40 @@
-# This code will be part of your UDF definition
-from snowflake.snowpark import Session
+CREATE OR REPLACE FUNCTION INSERT_DT_REFRESH_HISTORY (
+    DB_NAME VARCHAR,
+    SCHEMA_NAME VARCHAR,
+    TABLE_NAME VARCHAR
+)
+RETURNS VARCHAR 
+LANGUAGE PYTHON
+RUNTIME_VERSION = '3.8' 
+PACKAGES = ('snowflake-snowpark-python') 
+HANDLER = 'insert_refresh_history_handler' 
+AS $$
+import snowflake.snowpark as snowpark
 from snowflake.snowpark.functions import max as max_, col
 from snowflake.snowpark.types import StructType, StructField, StringType, TimestampType, VariantType, IntegerType
 
-def insert_refresh_history_udf(session: Session, db_name: str, schema_name: str, table_name: str):
+def insert_refresh_history_handler(session: snowpark.Session, db_name: str, schema_name: str, table_name: str):
     """
-    Snowpark Python UDF to insert dynamic table refresh history.
+    Snowflake Python UDF to insert dynamic table refresh history.
     """
     history_table_identifier = f'"{db_name}"."{schema_name}"."T_DT_REFRESH_HISTORY"'
     dynamic_table_identifier = f'"{db_name}"."{schema_name}"."{table_name}"'
 
     # Step 0: Get the latest REFRESH_END_TIME from the history table using DataFrame
-    latest_refresh_time_df = session.table(history_table_identifier).filter(
-        (col("DATABASE_NAME") == db_name.upper()) &
-        (col("SCHEMA_NAME") == schema_name.upper()) &
-        (col("TABLE_NAME") == table_name.upper())
-    ).agg(max_("REFRESH_END_TIME")).collect()
+    try:
+        latest_refresh_time_df = session.table(history_table_identifier).filter(
+            (col("DATABASE_NAME") == db_name.upper()) &
+            (col("SCHEMA_NAME") == schema_name.upper()) &
+            (col("TABLE_NAME") == table_name.upper())
+        ).agg(max_("REFRESH_END_TIME")).collect()
 
-    latest_refresh_time = latest_refresh_time_df[0][0] if latest_refresh_time_df else None
+        latest_refresh_time = latest_refresh_time_df[0][0] if latest_refresh_time_df else None
+    except Exception as e:
+        # Handle the case where the history table might not exist yet
+        # In a UDF, you might return an error message or a specific value
+        print(f"Warning: Could not query history table. Assuming no history exists. Error: {e}")
+        latest_refresh_time = None
+
 
     # Step 1: Query dynamic_table_refresh_history using DataFrame
     # Define schema for the dynamic_table_refresh_history view results
@@ -33,7 +50,7 @@ def insert_refresh_history_udf(session: Session, db_name: str, schema_name: str,
         StructField("REFRESH_START_TIME", TimestampType()),
         StructField("REFRESH_END_TIME", TimestampType()),
         StructField("COMPLETION_TARGET", StringType()),
-        StructField("STATISTICS", VariantType()),
+        StructField("STATISTICS", VariantType()), # STATISTICS is a VARIANT
         StructField("REFRESH_ACTION", StringType()),
         StructField("REFRESH_TRIGGER", StringType()),
         StructField("TARGET_LAG_SEC", IntegerType())
@@ -74,53 +91,19 @@ def insert_refresh_history_udf(session: Session, db_name: str, schema_name: str,
         new_history_df = refresh_history_df # No history yet, insert all
 
     # Step 2: Insert into history table using DataFrame write
-    if new_history_df.count() > 0:
-        new_history_df.write.mode("append").save_as_table(history_table_identifier)
-        print(f"✅ Inserted {new_history_df.count()} new rows into T_DT_REFRESH_HISTORY")
-    else:
-        print("✅ No new refresh history found to insert.")
+    try:
+        if new_history_df.count() > 0:
+            new_history_df.write.mode("append").save_as_table(history_table_identifier)
+            rows_inserted = new_history_df.count()
+            print(f"✅ Inserted {rows_inserted} new rows into T_DT_REFRESH_HISTORY")
+        else:
+            rows_inserted = 0
+            print("✅ No new refresh history found to insert.")
+    except Exception as e:
+        print(f"❌ Error inserting into history table: {e}")
+        # In a UDF, you might return an error message or re-raise the exception
+        return f"Error: {e}" # Return an error message
 
-    # UDFs typically return a value, even if it's just a status message
-    return f"Refresh history update for {dynamic_table_identifier} completed."
-
-# --- Code outside the UDF definition for deployment ---
-
-# Example of how you would create and deploy the UDF
-# This part runs in your local Python environment or a deployment script
-
-# Establish a Snowpark Session (using external browser auth or other methods)
-# This session is used to register the UDF in Snowflake
-session = Session.builder.configs({
-    "account": "YOUR_ACCOUNT",
-    "user": "YOUR_USER",
-    "warehouse": "YOUR_WAREHOUSE",
-    "database": "",
-    "schema": "",
-    "authenticator": "externalbrowser" # Or other auth method for deployment
-}).create()
-
-print(f"Connected to Snowflake as user: {session.get_current_user()}")
-
-# Register the Python function as a UDF in Snowflake
-# The UDF will be named 'INSERT_REFRESH_HISTORY_UDF' in Snowflake
-session.udf.register(
-    func=insert_refresh_history_udf,
-    name="INSERT_REFRESH_HISTORY_UDF",
-    is_permanent=True, # Set to True for a permanent UDF
-    stage_location="@UDF_STAGE", # Specify a stage for dependencies if any
-    replace=True, # Replace if a UDF with the same name exists
-    packages=['snowflake-snowpark-python'], # Specify required packages
-    # Define the return type of the UDF
-    return_type=StringType(),
-    # Define the input arguments and their types
-    input_types=[StringType(), StringType(), StringType()]
-)
-
-print("UDF INSERT_REFRESH_HISTORY_UDF registered successfully.")
-
-# Example of how you would call the UDF from SQL or another Snowpark script
-# This call happens *after* the UDF is deployed
-# result = session.sql("SELECT INSERT_REFRESH_HISTORY_UDF('', '', '')").collect()
-# print(result)
-
-session.close()
+    # Return a value indicating success or status
+    return f"Refresh history update completed. Inserted {rows_inserted} rows."
+$$;
