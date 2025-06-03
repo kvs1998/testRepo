@@ -1,223 +1,59 @@
---<<<<<<<<<<<<<<<<<<< FETCH DATA FOR HTML BODY >>>>>>>>>>>>>>>>>>>>>--
-import snowflake.connector
+import streamlit as st
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
-import jinja2
-import base64
-from io import BytesIO
+import plotly.express as px
 
-# Snowflake connection
-conn = snowflake.connector.connect(
-    user="your_username",
-    password="your_password",
-    account="your_account"
-)
+st.set_page_config(layout="wide")
 
-# Query to fetch table refresh status
-query = """
-SELECT DATABASE_NAME, SCHEMA_NAME, NAME, TARGET_LAG_SEC, MEAN_LAG_SEC,
-       MAXIMUM_LAG_SEC, TIME_WITHIN_TARGET_LAG_RATIO, LAST_COMPLETED_REFRESH_STATE,
-       LAST_COMPLETED_REFRESH_STATE_MESSAGE
-FROM TABLE (
-    <DB_NAME>.INFORMATION_SCHEMA.DYNAMIC_TABLES(
-        INCLUDE_CONNECTED => False
-    )
-)
-WHERE DATABASE_NAME = '<DB_NAME>'
-AND SCHEMA_NAME = '<SCHEMA_NAME>'
-AND NAME LIKE '<REGEX>'
-ORDER BY TARGET_LAG_SEC;
-"""
+st.title("My Tabbed Chart Dashboard")
 
-cur = conn.cursor()
-cur.execute(query)
-rows = cur.fetchall()
+tab1, tab2, tab3 = st.tabs(["Overview Charts", "Detailed Sales", "Product Analysis"])
 
-# Categorize data
-successful_tables = []
-failed_tables = []
-for row in rows:
-    table_data = {
-        "database_name": row[0],
-        "schema_name": row[1],
-        "name": row[2],
-        "target_lag_sec": row[3],
-        "mean_lag_sec": row[4],
-        "maximum_lag_sec": row[5],
-        "time_within_target_lag_ratio": row[6],
-        "last_completed_refresh_state": row[7],
-        "last_completed_refresh_state_message": row[8]
-    }
-    if row[7] == 'SUCCESS':
-        successful_tables.append(table_data)
-    else:
-        failed_tables.append(table_data)
+with tab1:
+    st.header("Overall Performance")
+    colA, colB = st.columns(2)
+    with colA:
+        st.subheader("Total Revenue")
+        st.metric(label="Revenue", value="$ 1,234,567", delta="10% from last month")
+        df_tab1_1 = pd.DataFrame({
+            "Day": pd.date_range("2023-01-01", periods=30),
+            "Users": np.random.randint(100, 500, 30)
+        })
+        st.line_chart(df_tab1_1, x="Day", y="Users")
+    with colB:
+        st.subheader("New Customers")
+        st.metric(label="Customers", value="1,200", delta="50 new customers")
+        df_tab1_2 = pd.DataFrame({
+            "Category": ["Electronics", "Clothing", "Books", "Home"],
+            "Sales": [500000, 300000, 150000, 280000]
+        })
+        fig_tab1_2 = px.bar(df_tab1_2, x="Category", y="Sales", title="Sales by Category")
+        st.plotly_chart(fig_tab1_2, use_container_width=True)
 
-# Close connections
-cur.close()
-conn.close()
+with tab2:
+    st.header("Sales Breakdown by Region")
+    st.write("Here you can see a more detailed breakdown of sales figures.")
+    df_tab2 = pd.DataFrame({
+        "Region": ["North", "South", "East", "West"],
+        "Q1": np.random.randint(100000, 300000, 4),
+        "Q2": np.random.randint(120000, 350000, 4),
+        "Q3": np.random.randint(150000, 400000, 4),
+        "Q4": np.random.randint(180000, 450000, 4)
+    })
+    st.dataframe(df_tab2)
+    fig_tab2 = px.bar(df_tab2.set_index("Region"), barmode="group", title="Quarterly Sales by Region")
+    st.plotly_chart(fig_tab2, use_container_width=True)
 
-
---<<<<<<<<<<<<<<<<<<< HTML BODY'S PIE CHART >>>>>>>>>>>>>>>>>>>>>--
-# Generate Pie Chart
-labels = ['Successful Tables', 'Failed Tables']
-sizes = [len(successful_tables), len(failed_tables)]
-colors = ['green', 'red']
-explode = (0.1, 0)  # Slightly separate the success portion
-
-plt.figure(figsize=(5, 5))
-plt.pie(sizes, labels=labels, autopct='%1.1f%%', colors=colors, explode=explode, startangle=140)
-plt.title("Table Refresh Status")
-
-# Save pie chart as a base64 string
-buffer = BytesIO()
-plt.savefig(buffer, format="png")
-buffer.seek(0)
-pie_chart_base64 = base64.b64encode(buffer.getvalue()).decode()
-buffer.close()
-
---<<<<<<<<<<<<<<<<<<< HTML BODY >>>>>>>>>>>>>>>>>>>>>--
-<!DOCTYPE html>
-<html>
-<head>
-    <style>
-        table {
-            width: 100%;
-            border-collapse: collapse;
-        }
-        th, td {
-            border: 1px solid black;
-            padding: 8px;
-            text-align: left;
-        }
-        th {
-            background-color: #f2f2f2;
-        }
-        img {
-            display: block;
-            margin-left: auto;
-            margin-right: auto;
-        }
-    </style>
-</head>
-<body>
-    <h2>Dynamic Table Refresh Status</h2>
-
-    <!-- Pie Chart -->
-    <img src="data:image/png;base64,{{ pie_chart }}" alt="Table Refresh Status Pie Chart"/>
-
-    <h3>Successful Tables</h3>
-    <table>
-        <tr>
-            <th>Database Name</th>
-            <th>Schema Name</th>
-            <th>Table Name</th>
-            <th>Target Lag (sec)</th>
-            <th>Mean Lag (sec)</th>
-            <th>Max Lag (sec)</th>
-            <th>Within Target Ratio</th>
-            <th>Last Refresh State</th>
-        </tr>
-        {% for table in successful_tables %}
-        <tr>
-            <td>{{ table.database_name }}</td>
-            <td>{{ table.schema_name }}</td>
-            <td>{{ table.name }}</td>
-            <td>{{ table.target_lag_sec }}</td>
-            <td>{{ table.mean_lag_sec }}</td>
-            <td>{{ table.maximum_lag_sec }}</td>
-            <td>{{ table.time_within_target_lag_ratio }}</td>
-            <td>{{ table.last_completed_refresh_state }}</td>
-        </tr>
-        {% endfor %}
-    </table>
-
-    <h3>Failed Tables</h3>
-    <table>
-        <tr>
-            <th>Database Name</th>
-            <th>Schema Name</th>
-            <th>Table Name</th>
-            <th>Target Lag (sec)</th>
-            <th>Mean Lag (sec)</th>
-            <th>Max Lag (sec)</th>
-            <th>Within Target Ratio</th>
-            <th>Last Refresh State</th>
-            <th>Error Message</th>
-        </tr>
-        {% for table in failed_tables %}
-        <tr>
-            <td>{{ table.database_name }}</td>
-            <td>{{ table.schema_name }}</td>
-            <td>{{ table.name }}</td>
-            <td>{{ table.target_lag_sec }}</td>
-            <td>{{ table.mean_lag_sec }}</td>
-            <td>{{ table.maximum_lag_sec }}</td>
-            <td>{{ table.time_within_target_lag_ratio }}</td>
-            <td>{{ table.last_completed_refresh_state }}</td>
-            <td>{{ table.last_completed_refresh_state_message }}</td>
-        </tr>
-        {% endfor %}
-    </table>
-</body>
-</html>
-
-
--- <<<<<<<<<<<<<<<<<<<< SENT MAIL >>>>>>>>>>>>>>>>>> --
-from email.message import EmailMessage
-import smtplib
-import jinja2
-
-# Load Jinja2 template
-env = jinja2.Environment(loader=jinja2.FileSystemLoader('.'))
-template = env.get_template("email_template.html")
-
-# Render HTML with data
-html_content = template.render(
-    successful_tables=successful_tables,
-    failed_tables=failed_tables,
-    pie_chart=pie_chart_base64
-)
-
-# Setup the email message
-msg = EmailMessage()
-msg['From'] = "your_email@your_company.com"
-msg['To'] = "recipient@company.com"
-msg['Subject'] = "Dynamic Table Refresh Status"
-msg.set_content("This is a fallback message for email clients that don't support HTML.", subtype='plain')
-msg.add_alternative(html_content, subtype='html')
-
-# Send the email
-with smtplib.SMTP("abc.my_company.com") as server:
-    server.send_message(msg)
-
-print("Email sent successfully!")
-
-
-
-
-import matplotlib.pyplot as plt
-import io
-import base64
-
-def generate_line_chart(top_10_tables):
-    buffer = io.BytesIO()
-
-    table_names = [t['table_name'] for t in top_10_tables]
-    mean_lags = [t['mean_lag'] for t in top_10_tables]
-    target_lags = [t['target_lag'] for t in top_10_tables]
-
-    plt.figure(figsize=(15, 4))  # Wider figure to improve readability
-    plt.plot(table_names, mean_lags, marker='o', linestyle='-', color='blue', label='Mean Lag')
-    plt.plot(table_names, target_lags, marker='s', linestyle='--', color='red', label='Target Lag')
-
-    plt.xticks(rotation=60, ha="right")  # Rotate labels for better visibility
-    plt.ylabel("Lag (seconds)")
-    plt.title("Top 10 Tables by Mean Lag vs Target Lag")
-    plt.legend()
-    plt.grid(True)
-
-    plt.savefig(buffer, format="png", dpi=100, bbox_inches="tight")
-    plt.close()
-
-    return base64.b64encode(buffer.getvalue()).decode()
+with tab3:
+    st.header("Product Performance Analysis")
+    st.write("Analyze individual product performance and profitability.")
+    df_tab3 = pd.DataFrame({
+        "Product_ID": [f"P{i:03d}" for i in range(1, 11)],
+        "Units_Sold": np.random.randint(50, 500, 10),
+        "Revenue": np.random.randint(1000, 10000, 10)
+    })
+    st.dataframe(df_tab3)
+    fig_tab3 = px.scatter(df_tab3, x="Units_Sold", y="Revenue", size="Units_Sold",
+                          hover_name="Product_ID", title="Units Sold vs Revenue per Product")
+    st.plotly_chart(fig_tab3, use_container_width=True)
