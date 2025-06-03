@@ -6,12 +6,14 @@ import plotly.express as px
 
 st.set_page_config(layout="wide")
 
-st.title("My Tabbed Chart Dashboard")
+st.title("My Tabbed Chart Dashboard with Section Below Columns")
 
 tab1, tab2, tab3 = st.tabs(["Overview Charts", "Detailed Sales", "Product Analysis"])
 
 with tab1:
-    st.header("Overall Performance")
+    st.header("Overall Performance (Tab 1)")
+
+    # --- Start of the two columns section ---
     colA, colB = st.columns(2)
     with colA:
         st.subheader("Total Revenue")
@@ -30,6 +32,38 @@ with tab1:
         })
         fig_tab1_2 = px.bar(df_tab1_2, x="Category", y="Sales", title="Sales by Category")
         st.plotly_chart(fig_tab1_2, use_container_width=True)
+    # --- End of the two columns section ---
+
+    st.divider() # Optional: Add a visual separator
+
+    # --- Start of the horizontal section below the columns ---
+    st.header("Daily User Engagement (Horizontal Section Below Columns)")
+    st.write("This chart spans the full width below the two columns above.")
+
+    df_full_width_chart = pd.DataFrame({
+        "Date": pd.date_range("2023-01-01", periods=100),
+        "Page_Views": np.random.randint(500, 2000, 100),
+        "Bounces": np.random.randint(50, 200, 100)
+    })
+    fig_full_width = px.line(df_full_width_chart, x="Date", y=["Page_Views", "Bounces"],
+                             title="Daily Page Views and Bounces")
+    st.plotly_chart(fig_full_width, use_container_width=True)
+
+    st.subheader("Key Performance Indicators Summary")
+    col_kpi1, col_kpi2, col_kpi3 = st.columns(3)
+    with col_kpi1:
+        st.metric("Avg Session Duration", "5 min 30 sec")
+    with col_kpi2:
+        st.metric("Bounce Rate", "45%")
+    with col_kpi3:
+        st.metric("Conversion Rate", "2.5%")
+
+    st.markdown("---") # Another way to add a separator
+
+    st.write("This is some additional text content, spanning the full width.")
+
+    # --- End of the horizontal section ---
+
 
 with tab2:
     st.header("Sales Breakdown by Region")
