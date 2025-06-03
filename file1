@@ -1,102 +1,123 @@
-import streamlit as st
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
+# ... (inside your app.py)
 import plotly.express as px
+import pandas as pd
+import streamlit as st
+import snowflake_data # Assuming your module name
 
-st.set_page_config(layout="wide")
-
-st.title("My Tabbed Chart Dashboard with Section Below Columns")
-
-tab1, tab2, tab3 = st.tabs(["Overview Charts", "Detailed Sales", "Product Analysis"])
+# ... (st.set_page_config, st.title, tab setup)
 
 with tab1:
     st.header("Overall Performance (Tab 1)")
 
+    # Fetch the cached raw data once
+    history_df = snowflake_data.get_dt_refresh_history()
+
     # --- Start of the two columns section ---
     colA, colB = st.columns(2)
-with colA:
-        st.subheader("Chart 1: Number of Tables per Schema (by Database)")
 
-        # Perform the calculation on the cached DataFrame
-        table_counts_df = snowflake_data.calculate_table_counts_per_schema_db(history_df)
+    with colA:
+        st.subheader("Tables per Schema (Top N by Database.Schema)")
 
-        if not table_counts_df.empty:
+        if not history_df.empty:
+            table_counts_df = snowflake_data.calculate_table_counts_per_schema_db(history_df)
+
+            # Create a combined 'database.schema' column for better labeling
             table_counts_df['db_schema'] = table_counts_df['database_name'] + '.' + table_counts_df['schema_name']
-            fig_pie = px.pie(table_counts_df,
-                             values='table_count',
-                             names='db_schema',
-                             title='Number of Tables per Schema (across Databases)',
-                             hole=0.3)
-            fig_pie.update_traces(textposition='inside', textinfo='percent+label')
-            st.plotly_chart(fig_pie, use_container_width=True)
+
+            # Optional: Allow user to select database or view only top N
+            all_databases = ['All'] + sorted(table_counts_df['database_name'].unique().tolist())
+            selected_database = st.selectbox("Filter by Database (colA)", all_databases)
+
+            if selected_database != 'All':
+                filtered_counts_df = table_counts_df[table_counts_df['database_name'] == selected_database]
+            else:
+                filtered_counts_df = table_counts_df
+
+            # Allow user to select top N
+            num_top_schemas = st.slider("Show Top N Schemas (colA)", min_value=5, max_value=min(20, len(filtered_counts_df)), value=min(10, len(filtered_counts_df)))
+
+            # Sort and select top N
+            display_counts_df = filtered_counts_df.sort_values('table_count', ascending=False).head(num_top_schemas)
+
+            if not display_counts_df.empty:
+                fig_bar_schemas = px.bar(display_counts_df,
+                                         x='table_count',
+                                         y='db_schema',
+                                         orientation='h',
+                                         title=f'Top {num_top_schemas} Schemas by Table Count ({selected_database})',
+                                         labels={'table_count': 'Number of Tables', 'db_schema': 'Database.Schema'})
+                fig_bar_schemas.update_yaxes(categoryorder='total ascending') # Ensures bars are sorted by count
+                st.plotly_chart(fig_bar_schemas, use_container_width=True)
+            else:
+                st.info("No data for selected filter.")
         else:
             st.warning("No data found to display table counts.")
+
     with colB:
-        st.subheader("New Customers")
-        st.metric(label="Customers", value="1,200", delta="50 new customers")
-        df_tab1_2 = pd.DataFrame({
-            "Category": ["Electronics", "Clothing", "Books", "Home"],
-            "Sales": [500000, 300000, 150000, 280000]
-        })
-        fig_tab1_2 = px.bar(df_tab1_2, x="Category", y="Sales", title="Sales by Category")
-        st.plotly_chart(fig_tab1_2, use_container_width=True)
-    # --- End of the two columns section ---
+        st.subheader("Chart 2: New Customers")
+        # ... (other content for colB)
 
     st.divider() # Optional: Add a visual separator
 
-    # --- Start of the horizontal section below the columns ---
-    st.header("Daily User Engagement (Horizontal Section Below Columns)")
-    st.write("This chart spans the full width below the two columns above.")
+    # --- Horizontal section below columns ---
+    st.header("Distribution of Dynamic Table States")
 
-    df_full_width_chart = pd.DataFrame({
-        "Date": pd.date_range("2023-01-01", periods=100),
-        "Page_Views": np.random.randint(500, 2000, 100),
-        "Bounces": np.random.randint(50, 200, 100)
-    })
-    fig_full_width = px.line(df_full_width_chart, x="Date", y=["Page_Views", "Bounces"],
-                             title="Daily Page Views and Bounces")
-    st.plotly_chart(fig_full_width, use_container_width=True)
+    if not history_df.empty:
+        state_counts = history_df['STATE'].value_counts().reset_index()
+        state_counts.columns = ['State', 'Count'] # Rename columns for clarity
 
-    st.subheader("Key Performance Indicators Summary")
-    col_kpi1, col_kpi2, col_kpi3 = st.columns(3)
-    with col_kpi1:
-        st.metric("Avg Session Duration", "5 min 30 sec")
-    with col_kpi2:
-        st.metric("Bounce Rate", "45%")
-    with col_kpi3:
-        st.metric("Conversion Rate", "2.5%")
+        # Define a semantic order for states
+        state_order = ["FAILED", "UPSTREAM_FAILED", "CANCELLED", "SCHEDULED", "EXECUTING", "SUCCEEDED"]
+        state_counts['State'] = pd.Categorical(state_counts['State'], categories=state_order, ordered=True)
+        state_counts = state_counts.sort_values('State')
 
-    st.markdown("---") # Another way to add a separator
+        fig_bar_states = px.bar(state_counts,
+                                 x='Count',
+                                 y='State',
+                                 orientation='h', # Make it horizontal
+                                 title='Number of Tables per Refresh State',
+                                 color='State', # Color bars by state for distinction
+                                 color_discrete_map={ # Optional: Custom colors for states
+                                     "FAILED": "red",
+                                     "UPSTREAM_FAILED": "darkred",
+                                     "CANCELLED": "orange",
+                                     "SCHEDULED": "blue",
+                                     "EXECUTING": "purple",
+                                     "SUCCEEDED": "green"
+                                 })
+        fig_bar_states.update_layout(showlegend=False) # Legend is redundant if bars are labeled by color
+        fig_bar_states.update_yaxes(categoryorder="array", categoryarray=state_order[::-1]) # Order y-axis correctly
+        st.plotly_chart(fig_bar_states, use_container_width=True)
+    else:
+        st.warning("No data found to display table states.")
 
-    st.write("This is some additional text content, spanning the full width.")
+    st.subheader("Key Refresh Status Summary (for quick glance)")
+    if not history_df.empty:
+        state_counts = history_df['STATE'].value_counts()
+        total_tables = state_counts.sum()
 
-    # --- End of the horizontal section ---
+        col_failed, col_succeeded, col_executing = st.columns(3)
 
+        with col_failed:
+            failed_count = state_counts.get("FAILED", 0) + state_counts.get("UPSTREAM_FAILED", 0)
+            st.metric(label="<span style='color:red;'>Total Failed/Upstream Failed</span>",
+                      value=f"{failed_count} tables",
+                      delta=f"{failed_count/total_tables:.1%}",
+                      delta_color="inverse")
 
-with tab2:
-    st.header("Sales Breakdown by Region")
-    st.write("Here you can see a more detailed breakdown of sales figures.")
-    df_tab2 = pd.DataFrame({
-        "Region": ["North", "South", "East", "West"],
-        "Q1": np.random.randint(100000, 300000, 4),
-        "Q2": np.random.randint(120000, 350000, 4),
-        "Q3": np.random.randint(150000, 400000, 4),
-        "Q4": np.random.randint(180000, 450000, 4)
-    })
-    st.dataframe(df_tab2)
-    fig_tab2 = px.bar(df_tab2.set_index("Region"), barmode="group", title="Quarterly Sales by Region")
-    st.plotly_chart(fig_tab2, use_container_width=True)
+        with col_succeeded:
+            succeeded_count = state_counts.get("SUCCEEDED", 0)
+            st.metric(label="<span style='color:green;'>Succeeded</span>",
+                      value=f"{succeeded_count} tables",
+                      delta=f"{succeeded_count/total_tables:.1%}%",
+                      delta_color="normal")
 
-with tab3:
-    st.header("Product Performance Analysis")
-    st.write("Analyze individual product performance and profitability.")
-    df_tab3 = pd.DataFrame({
-        "Product_ID": [f"P{i:03d}" for i in range(1, 11)],
-        "Units_Sold": np.random.randint(50, 500, 10),
-        "Revenue": np.random.randint(1000, 10000, 10)
-    })
-    st.dataframe(df_tab3)
-    fig_tab3 = px.scatter(df_tab3, x="Units_Sold", y="Revenue", size="Units_Sold",
-                          hover_name="Product_ID", title="Units Sold vs Revenue per Product")
-    st.plotly_chart(fig_tab3, use_container_width=True)
+        with col_executing:
+            executing_count = state_counts.get("EXECUTING", 0)
+            st.metric(label="<span style='color:purple;'>Executing</span>",
+                      value=f"{executing_count} tables")
+
+    else:
+        st.info("No data for KPI summary.")
+
+    # ... (rest of your app.py content)
