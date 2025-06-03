@@ -1,83 +1,21 @@
-# ... (inside your app.py)
-import plotly.express as px
-import pandas as pd
-import streamlit as st
-import snowflake_data # Assuming your module name
-
-# ... (st.set_page_config, st.title, tab setup)
-
-with tab1:
-    st.header("Overall Performance (Tab 1)")
-
-    # Fetch the cached raw data once
-    history_df = snowflake_data.get_dt_refresh_history()
-
-    # --- Start of the two columns section ---
-    colA, colB = st.columns(2)
-
-    with colA:
-        st.subheader("Tables per Schema (Top N by Database.Schema)")
-
-        if not history_df.empty:
-            table_counts_df = snowflake_data.calculate_table_counts_per_schema_db(history_df)
-
-            # Create a combined 'database.schema' column for better labeling
-            table_counts_df['db_schema'] = table_counts_df['database_name'] + '.' + table_counts_df['schema_name']
-
-            # Optional: Allow user to select database or view only top N
-            all_databases = ['All'] + sorted(table_counts_df['database_name'].unique().tolist())
-            selected_database = st.selectbox("Filter by Database (colA)", all_databases)
-
-            if selected_database != 'All':
-                filtered_counts_df = table_counts_df[table_counts_df['database_name'] == selected_database]
-            else:
-                filtered_counts_df = table_counts_df
-
-            # Allow user to select top N
-            num_top_schemas = st.slider("Show Top N Schemas (colA)", min_value=5, max_value=min(20, len(filtered_counts_df)), value=min(10, len(filtered_counts_df)))
-
-            # Sort and select top N
-            display_counts_df = filtered_counts_df.sort_values('table_count', ascending=False).head(num_top_schemas)
-
-            if not display_counts_df.empty:
-                fig_bar_schemas = px.bar(display_counts_df,
-                                         x='table_count',
-                                         y='db_schema',
-                                         orientation='h',
-                                         title=f'Top {num_top_schemas} Schemas by Table Count ({selected_database})',
-                                         labels={'table_count': 'Number of Tables', 'db_schema': 'Database.Schema'})
-                fig_bar_schemas.update_yaxes(categoryorder='total ascending') # Ensures bars are sorted by count
-                st.plotly_chart(fig_bar_schemas, use_container_width=True)
-            else:
-                st.info("No data for selected filter.")
-        else:
-            st.warning("No data found to display table counts.")
-
-    with colB:
-        st.subheader("Chart 2: New Customers")
-        # ... (other content for colB)
-
-    st.divider() # Optional: Add a visual separator
-
-    # --- Horizontal section below columns ---
+# --- Remaining charts for states and KPIs ---
     st.header("Distribution of Dynamic Table States")
 
     if not history_df.empty:
         state_counts = history_df['STATE'].value_counts().reset_index()
-        state_counts.columns = ['State', 'Count'] # Rename columns for clarity
+        state_counts.columns = ['STATE', 'COUNT']
 
-        # Define a semantic order for states
         state_order = ["FAILED", "UPSTREAM_FAILED", "CANCELLED", "SCHEDULED", "EXECUTING", "SUCCEEDED"]
-        state_counts['State'] = pd.Categorical(state_counts['State'], categories=state_order, ordered=True)
-        state_counts = state_counts.sort_values('State')
+        state_counts['STATE'] = pd.Categorical(state_counts['STATE'], categories=state_order, ordered=True)
+        state_counts = state_counts.sort_values('STATE')
 
         fig_bar_states = px.bar(state_counts,
-                                 x='Count',
-                                 y='State',
-                                 orientation='h', # Make it horizontal
+                                 x='COUNT',
+                                 y='STATE',
+                                 orientation='h',
                                  title='Number of Tables per Refresh State',
-                                 color='State', # Color bars by state for distinction
-                                 color_discrete_map={ # Optional: Custom colors for states
+                                 color='STATE',
+                                 color_discrete_map={
                                      "FAILED": "red",
                                      "UPSTREAM_FAILED": "darkred",
                                      "CANCELLED": "orange",
@@ -85,8 +23,8 @@ with tab1:
                                      "EXECUTING": "purple",
                                      "SUCCEEDED": "green"
                                  })
-        fig_bar_states.update_layout(showlegend=False) # Legend is redundant if bars are labeled by color
-        fig_bar_states.update_yaxes(categoryorder="array", categoryarray=state_order[::-1]) # Order y-axis correctly
+        fig_bar_states.update_layout(showlegend=False)
+        fig_bar_states.update_yaxes(categoryorder="array", categoryarray=state_order[::-1])
         st.plotly_chart(fig_bar_states, use_container_width=True)
     else:
         st.warning("No data found to display table states.")
@@ -109,7 +47,7 @@ with tab1:
             succeeded_count = state_counts.get("SUCCEEDED", 0)
             st.metric(label="<span style='color:green;'>Succeeded</span>",
                       value=f"{succeeded_count} tables",
-                      delta=f"{succeeded_count/total_tables:.1%}%",
+                      delta=f"{succeeded_count/total_tables:.1%}",
                       delta_color="normal")
 
         with col_executing:
@@ -119,5 +57,3 @@ with tab1:
 
     else:
         st.info("No data for KPI summary.")
-
-    # ... (rest of your app.py content)
