@@ -15,14 +15,23 @@ with tab1:
 
     # --- Start of the two columns section ---
     colA, colB = st.columns(2)
-    with colA:
-        st.subheader("Total Revenue")
-        st.metric(label="Revenue", value="$ 1,234,567", delta="10% from last month")
-        df_tab1_1 = pd.DataFrame({
-            "Day": pd.date_range("2023-01-01", periods=30),
-            "Users": np.random.randint(100, 500, 30)
-        })
-        st.line_chart(df_tab1_1, x="Day", y="Users")
+with colA:
+        st.subheader("Chart 1: Number of Tables per Schema (by Database)")
+
+        # Perform the calculation on the cached DataFrame
+        table_counts_df = snowflake_data.calculate_table_counts_per_schema_db(history_df)
+
+        if not table_counts_df.empty:
+            table_counts_df['db_schema'] = table_counts_df['database_name'] + '.' + table_counts_df['schema_name']
+            fig_pie = px.pie(table_counts_df,
+                             values='table_count',
+                             names='db_schema',
+                             title='Number of Tables per Schema (across Databases)',
+                             hole=0.3)
+            fig_pie.update_traces(textposition='inside', textinfo='percent+label')
+            st.plotly_chart(fig_pie, use_container_width=True)
+        else:
+            st.warning("No data found to display table counts.")
     with colB:
         st.subheader("New Customers")
         st.metric(label="Customers", value="1,200", delta="50 new customers")
