@@ -1,59 +1,74 @@
-# --- Remaining charts for states and KPIs ---
-    st.header("Distribution of Dynamic Table States")
+# In your app.py (inside the tab1 section, likely a new dedicated section)
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+import snowflake_data # Assuming your module name
+
+# ... (Previous setup for tab1, history_df fetching)
+
+with tab1:
+    # ... (previous content for colA, colB, and other full-width sections)
+
+    st.divider()
+    st.header("Cumulative State Counts per Table")
+    st.write("This chart shows the historical count of each state for individual tables.")
 
     if not history_df.empty:
-        state_counts = history_df['STATE'].value_counts().reset_index()
-        state_counts.columns = ['STATE', 'COUNT']
+        # Group by TABLE_NAME and STATE, then count occurrences
+        table_state_counts = history_df.groupby(['TABLE_NAME', 'STATE']).size().reset_index(name='COUNT')
 
-        state_order = ["FAILED", "UPSTREAM_FAILED", "CANCELLED", "SCHEDULED", "EXECUTING", "SUCCEEDED"]
-        state_counts['STATE'] = pd.Categorical(state_counts['STATE'], categories=state_order, ordered=True)
-        state_counts = state_counts.sort_values('STATE')
+        # Pivot the table to have states as columns for stacking
+        # Fill NaN with 0 for states that a table might not have
+        pivot_df = table_state_counts.pivot_table(index='TABLE_NAME',
+                                                columns='STATE',
+                                                values='COUNT').fillna(0).reset_index()
 
-        fig_bar_states = px.bar(state_counts,
-                                 x='COUNT',
-                                 y='STATE',
-                                 orientation='h',
-                                 title='Number of Tables per Refresh State',
-                                 color='STATE',
-                                 color_discrete_map={
-                                     "FAILED": "red",
-                                     "UPSTREAM_FAILED": "darkred",
-                                     "CANCELLED": "orange",
-                                     "SCHEDULED": "blue",
-                                     "EXECUTING": "purple",
-                                     "SUCCEEDED": "green"
-                                 })
-        fig_bar_states.update_layout(showlegend=False)
-        fig_bar_states.update_yaxes(categoryorder="array", categoryarray=state_order[::-1])
-        st.plotly_chart(fig_bar_states, use_container_width=True)
+        # Ensure all states are present as columns, even if all tables don't have them
+        all_possible_states = ["SCHEDULED", "EXECUTING", "SUCCEEDED", "FAILED", "CANCELLED", "UPSTREAM_FAILED"]
+        for state in all_possible_states:
+            if state not in pivot_df.columns:
+                pivot_df[state] = 0
+
+        # Define the order for stacking (e.g., problematic states first)
+        stack_order = ["FAILED", "UPSTREAM_FAILED", "CANCELLED", "EXECUTING", "SCHEDULED", "SUCCEEDED"]
+
+        # Sort the tables for better presentation (e.g., by total fails or total refreshes)
+        pivot_df['TOTAL_REFRESHES'] = pivot_df[all_possible_states].sum(axis=1)
+        pivot_df = pivot_df.sort_values(by=['FAILED', 'TOTAL_REFRESHES'], ascending=[False, False])
+
+        # Filter for top N tables if there are hundreds to avoid an unreadable chart
+        num_top_tables = st.slider(
+            "Show Top N Tables by Total Refreshes (for State History)",
+            min_value=5,
+            max_value=min(50, len(pivot_df)), # Max 50 or total tables, whichever is smaller
+            value=min(20, len(pivot_df)),     # Default to 20 or less
+            key="state_history_table_slider"
+        )
+        display_pivot_df = pivot_df.head(num_top_tables)
+
+
+        fig_table_states = px.bar(display_pivot_df,
+                                  x=stack_order, # Pass the list of state columns for stacking
+                                  y='TABLE_NAME',
+                                  orientation='h',
+                                  title=f'Historical State Counts for Top {num_top_tables} Tables',
+                                  labels={
+                                      'value': 'Count',
+                                      'TABLE_NAME': 'Table Name',
+                                      'variable': 'State' # This is Plotly's default for stacked bar categories
+                                  },
+                                  color_discrete_map={ # Same color mapping as before
+                                      "FAILED": "red",
+                                      "UPSTREAM_FAILED": "darkred",
+                                      "CANCELLED": "orange",
+                                      "SCHEDULED": "blue",
+                                      "EXECUTING": "purple",
+                                      "SUCCEEDED": "green"
+                                  })
+
+        fig_table_states.update_layout(barmode='stack', showlegend=True) # Ensure bars are stacked and legend is shown
+        fig_table_states.update_yaxes(categoryorder='trace reversed') # Order y-axis as per sorted DataFrame
+        st.plotly_chart(fig_table_states, use_container_width=True)
+
     else:
-        st.warning("No data found to display table states.")
-
-    st.subheader("Key Refresh Status Summary (for quick glance)")
-    if not history_df.empty:
-        state_counts = history_df['STATE'].value_counts()
-        total_tables = state_counts.sum()
-
-        col_failed, col_succeeded, col_executing = st.columns(3)
-
-        with col_failed:
-            failed_count = state_counts.get("FAILED", 0) + state_counts.get("UPSTREAM_FAILED", 0)
-            st.metric(label="<span style='color:red;'>Total Failed/Upstream Failed</span>",
-                      value=f"{failed_count} tables",
-                      delta=f"{failed_count/total_tables:.1%}",
-                      delta_color="inverse")
-
-        with col_succeeded:
-            succeeded_count = state_counts.get("SUCCEEDED", 0)
-            st.metric(label="<span style='color:green;'>Succeeded</span>",
-                      value=f"{succeeded_count} tables",
-                      delta=f"{succeeded_count/total_tables:.1%}",
-                      delta_color="normal")
-
-        with col_executing:
-            executing_count = state_counts.get("EXECUTING", 0)
-            st.metric(label="<span style='color:purple;'>Executing</span>",
-                      value=f"{executing_count} tables")
-
-    else:
-        st.info("No data for KPI summary.")
+        st.warning("No data found to display table state history.")
