@@ -1,92 +1,437 @@
-# snowflake_data.py
+# app.py
 import streamlit as st
-from snowflake.snowpark import Session
 import pandas as pd
-import json # Import json for parsing variant
+import plotly.express as px
+import numpy as np # For random data generation if needed
 
-@st.cache_resource
-def get_snowflake_session():
-    """Establishes and caches the Snowflake session."""
-    sf_config = st.secrets["snowflake_dev"]
-    session = Session.builder.configs(sf_config).create()
-    return session
+# Import the functions from your module
+import snowflake_data
 
-session = get_snowflake_session() # Get the cached session
+st.set_page_config(layout="wide")
 
-@st.cache_data
-def get_dt_refresh_history():
-    """
-    Fetches the full refresh history data from Snowflake.
-    This should be your primary cached data extraction point.
-    """
-    st.info("Fetching refresh history from Snowflake...")
-    hist_df = session.sql(f"""
-        SELECT
-            DATABASE_NAME,
-            SCHEMA_NAME,
-            TABLE_NAME,
-            STATE,
-            STATE_CODE,
-            STATE_MESSAGE,
-            QUERY_ID,
-            DATA_TIMESTAMP,
-            REFRESH_START_TIME,
-            REFRESH_END_TIME,
-            COMPLETITION_TARGET,
-            STATISTICS, -- This is the VARIANT column
-            REFERSH_ACTION, -- Renamed to REFRESH_ACTION for clarity in app
-            REFRESH_TRIGGER,
-            TARGET_LAG_SEC
-        FROM db_name.schema_name.T_DT_REFRESH_HISTORY
-    """).to_pandas()
-    # Ensure REFRESH_ACTION column has the correct name (if it's REFERSH_ACTION in DB)
-    if 'REFERSH_ACTION' in hist_df.columns:
-        hist_df.rename(columns={'REFERSH_ACTION': 'REFRESH_ACTION'}, inplace=True)
+st.title("Dynamic Table Refresh Status Dashboard")
 
-    return hist_df
+# Define the tabs - added "REFRESH_STATS"
+tab1, tab_dt_state, tab_refresh_stats, tab3 = st.tabs(["Overview", "DT STATE", "REFRESH_STATS", "Product Analysis"])
 
-# New function to parse the STATISTICS VARIANT
-@st.cache_data
-def parse_refresh_statistics(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Parses the 'STATISTICS' VARIANT column and extracts numerical properties.
-    Returns a new DataFrame with original columns + extracted statistics.
-    """
-    if 'STATISTICS' not in df.columns or df.empty:
-        return df # Return original df if no STATISTICS column or empty
+# --- Fetch the cached raw data once, outside of any specific tab ---
+# This ensures all tabs can access the data, and it's cached once.
+history_df = snowflake_data.get_dt_refresh_history()
 
-    # Define the statistics properties we want to extract
-    stats_properties = [
-        'numInsertedRows', 'numDeletedRows', 'numCopiedRows',
-        'numAddedPartitions', 'numRemovedPartitions'
+# Process statistics outside of tab blocks, as all tabs might benefit
+# And it's cached, so it only runs once per unique history_df.
+if not history_df.empty:
+    history_df_with_stats = snowflake_data.parse_refresh_statistics(history_df)
+    # Ensure DATA_TIMESTAMP is datetime for min/max calculations
+    history_df_with_stats['DATA_TIMESTAMP_DT'] = pd.to_datetime(history_df_with_stats['DATA_TIMESTAMP'])
+else:
+    history_df_with_stats = pd.DataFrame() # Ensure it's an empty DF if initial fetch failed
+
+# --- Tab 1: Overview ---
+with tab1:
+    st.header("Overall Dashboard Overview")
+
+    if not history_df_with_stats.empty:
+        # Display key refresh status metrics here, as they are a high-level overview
+        st.subheader("Key Refresh Status Summary (All Tables)")
+        state_counts_kpi = history_df_with_stats['STATE'].value_counts()
+        total_tables_kpi = state_counts_kpi.sum()
+
+        col_failed_kpi, col_succeeded_kpi, col_executing_kpi = st.columns(3)
+
+        with col_failed_kpi:
+            failed_count_kpi = state_counts_kpi.get("FAILED", 0) + state_counts_kpi.get("UPSTREAM_FAILED", 0)
+            st.metric(label="<span style='color:red;'>Total Failed/Upstream Failed</span>",
+                      value=f"{failed_count_kpi} tables",
+                      delta=f"{failed_count_kpi/total_tables_kpi:.1%}" if total_tables_kpi > 0 else "0.0%",
+                      delta_color="inverse")
+
+        with col_succeeded_kpi:
+            succeeded_count_kpi = state_counts_kpi.get("SUCCEEDED", 0)
+            st.metric(label="<span style='color:green;'>Succeeded</span>",
+                      value=f"{succeeded_count_kpi} tables",
+                      delta=f"{succeeded_count_kpi/total_tables_kpi:.1%}" if total_tables_kpi > 0 else "0.0%",
+                      delta_color="normal")
+
+        with col_executing_kpi:
+            executing_count_kpi = state_counts_kpi.get("EXECUTING", 0)
+            st.metric(label="<span style='color:purple;'>Executing</span>",
+                      value=f"{executing_count_kpi} tables")
+
+        st.divider()
+
+        st.subheader("Overall Distribution of Dynamic Table States")
+        state_counts = history_df_with_stats['STATE'].value_counts().reset_index()
+        state_counts.columns = ['STATE', 'COUNT']
+        state_order = ["FAILED", "UPSTREAM_FAILED", "CANCELLED", "SCHEDULED", "EXECUTING", "SUCCEEDED"]
+        state_counts['STATE'] = pd.Categorical(state_counts['STATE'], categories=state_order, ordered=True)
+        state_counts = state_counts.sort_values('STATE')
+        fig_bar_states = px.bar(state_counts,
+                                 x='COUNT', y='STATE', orientation='h',
+                                 title='Total Tables per Refresh State',
+                                 color='STATE',
+                                 color_discrete_map={
+                                     "FAILED": "red", "UPSTREAM_FAILED": "darkred", "CANCELLED": "orange",
+                                     "SCHEDULED": "blue", "EXECUTING": "purple", "SUCCEEDED": "green"
+                                 })
+        fig_bar_states.update_layout(showlegend=False)
+        fig_bar_states.update_yaxes(categoryorder="array", categoryarray=state_counts['STATE'].tolist()[::-1])
+        st.plotly_chart(fig_bar_states, use_container_width=True)
+
+
+    else:
+        st.warning("No data loaded from Snowflake. Cannot display overview.")
+
+
+# --- Tab "DT STATE": Dedicated Dynamic Table State Analysis (uses history_df_with_stats) ---
+with tab_dt_state:
+    st.header("Dynamic Table Refresh History & Analysis")
+
+    if history_df_with_stats.empty:
+        st.warning("No data loaded from Snowflake. Please ensure data is available.")
+        st.stop() # Exit early if no data at all
+
+    # Filter controls... (rest of the DT STATE tab logic, using history_df_with_stats)
+    # Ensure to replace all instances of history_df with history_df_with_stats in this tab
+    # Example:
+    # `filtered_history_df = history_df_with_stats.copy()`
+    # `history_df_with_stats['DATABASE_NAME'].unique().tolist()` etc.
+    # ... (all filter controls and chart generation from previous response)
+
+    # For brevity in this response, assume history_df_with_stats is used for all
+    # filtering and plotting operations in this tab. The logic is identical.
+    # I'll just re-insert the filtering setup and the primary stacked chart here.
+
+    st.subheader("Filter Table Refresh History:")
+    filter_cols_top = st.columns([1, 1, 1, 0.7])
+
+    with filter_cols_top[0]:
+        all_databases = ['All'] + sorted(history_df_with_stats['DATABASE_NAME'].unique().tolist())
+        selected_database = st.selectbox(
+            "Filter by Database:", options=all_databases, key="db_filter_dt" # Unique key for this tab
+        )
+
+    with filter_cols_top[1]:
+        if selected_database != 'All':
+            schemas_in_db = ['All'] + sorted(history_df_with_stats[history_df_with_stats['DATABASE_NAME'] == selected_database]['SCHEMA_NAME'].unique().tolist())
+        else:
+            schemas_in_db = ['All'] + sorted(history_df_with_stats['SCHEMA_NAME'].unique().tolist())
+        selected_schema = st.selectbox(
+            "Filter by Schema:", options=schemas_in_db, key="schema_filter_dt" # Unique key
+        )
+
+    filtered_history_df_dt = history_df_with_stats.copy()
+    if selected_database != 'All':
+        filtered_history_df_dt = filtered_history_df_dt[filtered_history_df_dt['DATABASE_NAME'] == selected_database]
+    if selected_schema != 'All':
+        filtered_history_df_dt = filtered_history_df_dt[filtered_history_df_dt['SCHEMA_NAME'] == selected_schema]
+
+
+    with filter_cols_top[2]:
+        all_states = sorted(history_df_with_stats['STATE'].unique().tolist())
+        selected_states = st.multiselect(
+            "Select States to Display:", options=all_states, default=all_states,
+            help="Select which refresh states to include in the stacked bar chart.",
+            key="state_multi_select_dt" # Unique key
+        )
+
+    with filter_cols_top[3]:
+        st.write("")
+        show_problem_tables_only = st.checkbox(
+            "Show only tables with past FAILED/UPSTREAM_FAILED states",
+            key="problem_tables_checkbox_dt" # Unique key
+        )
+
+    date_checkbox_col, date_input_col = st.columns([0.5, 1.5])
+    with date_checkbox_col:
+        st.write("")
+        use_current_day = st.checkbox("Show Current Day Only", key="current_day_checkbox_dt") # Unique key
+
+    with date_input_col:
+        min_data_date = history_df_with_stats['DATA_TIMESTAMP_DT'].min().date()
+        max_data_date = history_df_with_stats['DATA_TIMESTAMP_DT'].max().date()
+        today = pd.to_datetime('today').date()
+
+        date_input_disabled = False
+        date_range_value = (min_data_date, max_data_date)
+
+        if use_current_day:
+            if today < min_data_date or today > max_data_date:
+                st.warning(f"No data available for today ({today}). Showing data up to {max_data_date}.")
+                date_range_value = (max_data_date, max_data_date)
+                date_input_disabled = True
+            else:
+                date_range_value = (today, today)
+                date_input_disabled = True
+
+        date_range = st.date_input(
+            "Select Data Timestamp Range:",
+            value=date_range_value, min_value=min_data_date, max_value=max_data_date,
+            key="date_range_filter_dt", # Unique key
+            disabled=date_input_disabled
+        )
+
+    if len(date_range) == 2:
+        start_date = pd.to_datetime(date_range[0])
+        end_date = pd.to_datetime(date_range[1]) + pd.Timedelta(days=1)
+        filtered_history_df_dt = filtered_history_df_dt[
+            (filtered_history_df_dt['DATA_TIMESTAMP_DT'] >= start_date) &
+            (filtered_history_df_dt['DATA_TIMESTAMP_DT'] < end_date)
+        ]
+
+    if selected_states:
+        filtered_history_df_dt = filtered_history_df_dt[filtered_history_df_dt['STATE'].isin(selected_states)]
+    else:
+        st.warning("Please select at least one state to display data.")
+        filtered_history_df_dt = pd.DataFrame()
+
+    if show_problem_tables_only:
+        problem_tables_all_time = history_df_with_stats[history_df_with_stats['STATE'].isin(["FAILED", "UPSTREAM_FAILED"])]['TABLE_NAME'].unique()
+        if problem_tables_all_time.size > 0:
+            filtered_history_df_dt = filtered_history_df_dt[filtered_history_df_dt['TABLE_NAME'].isin(problem_tables_all_time)]
+        else:
+            st.info("No tables with FAILED/UPSTREAM_FAILED history found in the full dataset for this filter.")
+            filtered_history_df_dt = pd.DataFrame()
+
+    st.divider()
+
+    st.subheader("Historical State Counts per Table")
+    if not filtered_history_df_dt.empty:
+        table_state_counts = filtered_history_df_dt.groupby(['TABLE_NAME', 'STATE']).size().reset_index(name='COUNT')
+        pivot_df = table_state_counts.pivot_table(index='TABLE_NAME', columns='STATE', values='COUNT').fillna(0).reset_index()
+
+        all_possible_states = ["SCHEDULED", "EXECUTING", "SUCCEEDED", "FAILED", "CANCELLED", "UPSTREAM_FAILED"]
+        for state in all_possible_states:
+            if state not in pivot_df.columns:
+                pivot_df[state] = 0
+
+        stack_order_for_plot = [s for s in all_possible_states if s in selected_states]
+        if not stack_order_for_plot: st.info("No states selected to display."); pivot_df = pd.DataFrame()
+
+        if not pivot_df.empty:
+            pivot_df['TOTAL_REFRESHES'] = pivot_df[all_possible_states].sum(axis=1)
+            pivot_df['FAILED_COUNT_FOR_SORT'] = pivot_df['FAILED'] + pivot_df['UPSTREAM_FAILED']
+            pivot_df = pivot_df.sort_values(by=['FAILED_COUNT_FOR_SORT', 'TOTAL_REFRESHES'], ascending=[False, False])
+
+            num_top_tables = st.slider(
+                "Show Top N Tables (by FAILED/UPSTREAM_FAILED then Total Refreshes):",
+                min_value=5, max_value=min(100, len(pivot_df)), value=min(25, len(pivot_df)),
+                key="state_history_table_slider_dt" # Unique key
+            )
+            display_pivot_df = pivot_df.head(num_top_tables)
+            ordered_table_names = display_pivot_df['TABLE_NAME'].tolist()
+
+            fig_table_states = px.bar(display_pivot_df, x=stack_order_for_plot, y='TABLE_NAME', orientation='h',
+                                      title=f'Historical State Counts for Top {num_top_tables} Tables (Filtered)',
+                                      labels={'value': 'Count', 'TABLE_NAME': 'Table Name', 'variable': 'State'},
+                                      color_discrete_map={
+                                          "FAILED": "red", "UPSTREAM_FAILED": "darkred", "CANCELLED": "orange",
+                                          "SCHEDULED": "blue", "EXECUTING": "purple", "SUCCEEDED": "green"
+                                      },
+                                      hover_name='TABLE_NAME')
+            fig_table_states.update_layout(barmode='stack', showlegend=True, height=600)
+            fig_table_states.update_yaxes(categoryorder='array', categoryarray=ordered_table_names)
+            st.plotly_chart(fig_table_states, use_container_width=True)
+        else: st.info("No data for cumulative state counts chart after filtering.")
+    else: st.info("No data available for cumulative state counts chart after filters.")
+
+
+    st.header("Overall Distribution of Dynamic Table States")
+    if not filtered_history_df_dt.empty:
+        state_counts = filtered_history_df_dt['STATE'].value_counts().reset_index()
+        state_counts.columns = ['STATE', 'COUNT']
+        state_order = ["FAILED", "UPSTREAM_FAILED", "CANCELLED", "SCHEDULED", "EXECUTING", "SUCCEEDED"]
+        state_counts['STATE'] = pd.Categorical(state_counts['STATE'], categories=[s for s in state_order if s in state_counts['STATE'].unique()], ordered=True)
+        state_counts = state_counts.sort_values('STATE')
+
+        fig_bar_states = px.bar(state_counts, x='COUNT', y='STATE', orientation='h',
+                                 title='Number of Tables per Refresh State (Filtered)',
+                                 color='STATE', color_discrete_map={
+                                     "FAILED": "red", "UPSTREAM_FAILED": "darkred", "CANCELLED": "orange",
+                                     "SCHEDULED": "blue", "EXECUTING": "purple", "SUCCEEDED": "green"
+                                 })
+        fig_bar_states.update_layout(showlegend=False)
+        fig_bar_states.update_yaxes(categoryorder="array", categoryarray=state_counts['STATE'].tolist()[::-1])
+        st.plotly_chart(fig_bar_states, use_container_width=True)
+    else: st.info("No data to display overall state distribution after filtering.")
+
+    st.subheader("Key Refresh Status Summary (for quick glance)")
+    if not filtered_history_df_dt.empty:
+        state_counts_kpi = filtered_history_df_dt['STATE'].value_counts()
+        total_tables_kpi = state_counts_kpi.sum()
+
+        col_failed_kpi, col_succeeded_kpi, col_executing_kpi = st.columns(3)
+        with col_failed_kpi:
+            failed_count_kpi = state_counts_kpi.get("FAILED", 0) + state_counts_kpi.get("UPSTREAM_FAILED", 0)
+            st.metric(label="<span style='color:red;'>Total Failed/Upstream Failed</span>",
+                      value=f"{failed_count_kpi} tables",
+                      delta=f"{failed_count_kpi/total_tables_kpi:.1%}" if total_tables_kpi > 0 else "0.0%",
+                      delta_color="inverse")
+        with col_succeeded_kpi:
+            succeeded_count_kpi = state_counts_kpi.get("SUCCEEDED", 0)
+            st.metric(label="<span style='color:green;'>Succeeded</span>",
+                      value=f"{succeeded_count_kpi} tables",
+                      delta=f"{succeeded_count_kpi/total_tables_kpi:.1%}" if total_tables_kpi > 0 else "0.0%",
+                      delta_color="normal")
+        with col_executing_kpi:
+            executing_count_kpi = state_counts_kpi.get("EXECUTING", 0)
+            st.metric(label="<span style='color:purple;'>Executing</span>",
+                      value=f"{executing_count_kpi} tables")
+    else: st.info("No data for KPI summary after filtering.")
+
+
+# --- New Tab: REFRESH_STATS ---
+with tab_refresh_stats:
+    st.header("Refresh Statistics by Action Type")
+    st.write("Analyze the aggregate number of rows inserted, deleted, copied, and partitions changed for each refresh action type.")
+
+    if history_df_with_stats.empty:
+        st.warning("No data loaded from Snowflake or statistics could not be parsed. Cannot display refresh statistics.")
+        st.stop() # Exit if no data
+
+    # Define the columns that represent numerical statistics for plotting
+    statistic_cols_for_plot = [
+        'Inserted Rows', 'Deleted Rows', 'Copied Rows',
+        'Added Partitions', 'Removed Partitions'
     ]
-    # Rename to more user-friendly capitalized names for plotting
-    plot_stat_names = {
-        'numInsertedRows': 'Inserted Rows',
-        'numDeletedRows': 'Deleted Rows',
-        'numCopiedRows': 'Copied Rows',
-        'numAddedPartitions': 'Added Partitions',
-        'numRemovedPartitions': 'Removed Partitions'
-    }
 
-    # Create a copy to avoid SettingWithCopyWarning
-    df_copy = df.copy()
+    # --- Filtering for REFRESH_STATS Tab ---
+    st.subheader("Filter Refresh Statistics:")
+    stat_filter_cols = st.columns([1, 1, 1, 0.7])
 
-    # Function to safely parse JSON and extract property
-    def get_stat_value(stat_json, prop):
-        if pd.isna(stat_json):
-            return 0
-        try:
-            stats_dict = json.loads(stat_json)
-            return stats_dict.get(prop, 0)
-        except json.JSONDecodeError:
-            return 0 # Handle malformed JSON
+    with stat_filter_cols[0]:
+        all_action_types = ['All'] + sorted(history_df_with_stats['REFRESH_ACTION'].unique().tolist())
+        selected_action_type = st.selectbox(
+            "Filter by Refresh Action:",
+            options=all_action_types,
+            key="action_type_filter_stats"
+        )
 
-    # Apply the parsing for each property
-    for prop in stats_properties:
-        df_copy[plot_stat_names[prop]] = df_copy['STATISTICS'].apply(lambda x: get_stat_value(x, prop))
+    with stat_filter_cols[1]:
+        stat_min_data_date = history_df_with_stats['DATA_TIMESTAMP_DT'].min().date()
+        stat_max_data_date = history_df_with_stats['DATA_TIMESTAMP_DT'].max().date()
+        stat_today = pd.to_datetime('today').date()
 
-    return df_copy
+        stat_use_current_day = st.checkbox("Show Current Day Only (Stats)", key="current_day_checkbox_stats")
+
+        stat_date_input_disabled = False
+        stat_date_range_value = (stat_min_data_date, stat_max_data_date)
+
+        if stat_use_current_day:
+            if stat_today < stat_min_data_date or stat_today > stat_max_data_date:
+                st.warning(f"No data for today ({stat_today}). Showing up to {stat_max_data_date}.")
+                stat_date_range_value = (stat_max_data_date, stat_max_data_date)
+                stat_date_input_disabled = True
+            else:
+                stat_date_range_value = (stat_today, stat_today)
+                stat_date_input_disabled = True
+
+        stat_date_range = st.date_input(
+            "Select Data Timestamp Range (Stats):",
+            value=stat_date_range_value,
+            min_value=stat_min_data_date, max_value=stat_max_data_date,
+            key="date_range_filter_stats",
+            disabled=stat_date_input_disabled
+        )
+
+    with stat_filter_cols[2]:
+        # Allow user to select which statistic types to include in the plot
+        default_stats = [
+            'Inserted Rows', 'Deleted Rows', 'Copied Rows',
+            'Added Partitions', 'Removed Partitions'
+        ]
+        selected_stats_for_plot = st.multiselect(
+            "Select Statistics to Plot:",
+            options=default_stats,
+            default=default_stats,
+            key="stats_to_plot_multiselect"
+        )
+        if not selected_stats_for_plot:
+            st.warning("Please select at least one statistic to plot.")
+            selected_stats_for_plot = [] # Ensure it's empty if none selected
+
+    with stat_filter_cols[3]:
+        # Add a checkbox for logarithmic scale
+        st.write("") # Spacer
+        use_log_scale = st.checkbox("Use Logarithmic Scale (X-axis)", key="log_scale_checkbox_stats")
 
 
-# ... (calculate_table_counts_per_schema_db and calculate_average_refresh_time functions remain)
+    # --- Apply filters to the refresh_stats_df ---
+    filtered_stats_df = history_df_with_stats.copy()
+
+    if selected_action_type != 'All':
+        filtered_stats_df = filtered_stats_df[filtered_stats_df['REFRESH_ACTION'] == selected_action_type]
+
+    if len(stat_date_range) == 2:
+        stat_start_date = pd.to_datetime(stat_date_range[0])
+        stat_end_date = pd.to_datetime(stat_date_range[1]) + pd.Timedelta(days=1)
+        filtered_stats_df = filtered_stats_df[
+            (filtered_stats_df['DATA_TIMESTAMP_DT'] >= stat_start_date) &
+            (filtered_stats_df['DATA_TIMESTAMP_DT'] < stat_end_date)
+        ]
+
+    # Aggregate the filtered data by REFRESH_ACTION
+    if not filtered_stats_df.empty and selected_stats_for_plot:
+        # Sum only the selected statistics
+        aggregate_stats_df = filtered_stats_df.groupby('REFRESH_ACTION')[selected_stats_for_plot].sum().reset_index()
+
+        # Handle case where all summed values are 0 for selected stats, which can cause issues with log scale
+        for col in selected_stats_for_plot:
+            if col in aggregate_stats_df.columns:
+                aggregate_stats_df[col] = aggregate_stats_df[col].replace(0, np.nan) # Replace 0 with NaN for log scale
+
+        st.divider()
+        st.subheader("Aggregated Refresh Statistics by Action Type")
+
+        # Define color map for the statistics (ensure consistency if possible)
+        stat_color_map = {
+            'Inserted Rows': 'lightgreen',
+            'Deleted Rows': 'lightcoral',
+            'Copied Rows': 'lightblue',
+            'Added Partitions': 'yellowgreen',
+            'Removed Partitions': 'salmon'
+        }
+
+        fig_refresh_stats = px.bar(aggregate_stats_df,
+                                   x=selected_stats_for_plot, # Stacked columns are dynamic based on user selection
+                                   y='REFRESH_ACTION',
+                                   orientation='h',
+                                   title='Aggregate Row & Partition Changes by Refresh Action Type',
+                                   labels={
+                                       'value': 'Count (Rows/Partitions)',
+                                       'REFRESH_ACTION': 'Refresh Action Type',
+                                       'variable': 'Statistic Type'
+                                   },
+                                   color_discrete_map=stat_color_map
+                                   )
+
+        fig_refresh_stats.update_layout(barmode='stack', showlegend=True, height=450)
+        fig_refresh_stats.update_yaxes(categoryorder='total ascending') # Order by total value of the bar
+
+        if use_log_scale:
+            fig_refresh_stats.update_xaxes(type='log', title_text="Count (Log Scale)")
+            st.info("Logarithmic scale applied to X-axis to better visualize large differences.")
+        else:
+            fig_refresh_stats.update_xaxes(title_text="Count (Rows/Partitions)")
+
+        st.plotly_chart(fig_refresh_stats, use_container_width=True)
+
+    elif selected_stats_for_plot: # Only show warning if stats selected but no data
+        st.info("No data to display refresh statistics after filtering.")
+    else:
+        st.info("Please select at least one statistic to plot above.")
+
+
+# --- Tab 3: Product Analysis ---
+with tab3:
+    st.header("Product Performance Analysis")
+    st.write("Analyze individual product performance and profitability.")
+    df_tab3 = pd.DataFrame({
+        "Product_ID": [f"P{i:03d}" for i in range(1, 11)],
+        "Units_Sold": np.random.randint(50, 500, 10),
+        "Revenue": np.random.randint(1000, 10000, 10)
+    })
+    st.dataframe(df_tab3)
+    fig_tab3 = px.scatter(df_tab3, x="Units_Sold", y="Revenue", size="Units_Sold",
+                          hover_name="Product_ID", title="Units Sold vs Revenue per Product")
+    st.plotly_chart(fig_tab3, use_container_width=True)
