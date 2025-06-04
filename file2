@@ -1,8 +1,3 @@
-# app.py (Focusing only on the REFRESH_STATS tab for clarity)
-
-# ... (Previous imports, set_page_config, title, tab definitions)
-# ... (history_df fetching and initial DATA_TIMESTAMP_DT conversion)
-
 # --- New Tab: REFRESH_STATS ---
 with tab_refresh_stats:
     st.header("Refresh Statistics by Action Type and Table")
@@ -13,11 +8,10 @@ with tab_refresh_stats:
         st.stop() # Exit if no data
 
     # Define the 5 pre-existing columns that represent numerical statistics for plotting
-    statistic_cols_for_plot_raw = [ # Renamed to avoid confusion with `selected_stats_for_plot`
+    statistic_cols_for_plot_raw = [
         'NUMINSERTEDROWS', 'NUMDELETEDROWS', 'NUMCOPIEDROWS',
         'NUMADDEDPARTITIONS', 'NUMREMOVEDPARTITIONS'
     ]
-    # Friendly labels for the multiselect options and chart labels
     friendly_stat_labels = {
         'NUMINSERTEDROWS': 'Inserted Rows',
         'NUMDELETEDROWS': 'Deleted Rows',
@@ -25,15 +19,12 @@ with tab_refresh_stats:
         'NUMADDEDPARTITIONS': 'Added Partitions',
         'NUMREMOVEDPARTITIONS': 'Removed Partitions'
     }
-    # Reverse mapping for selection
     reverse_friendly_stat_labels = {v: k for k, v in friendly_stat_labels.items()}
 
 
-    # --- Filtering for REFRESH_STATS Tab ---
     st.subheader("Apply Filters:")
-    filter_cols_stats_row1 = st.columns([1, 1, 1, 1]) # Top row of filters
+    filter_cols_stats_row1 = st.columns([1, 1, 1, 1])
 
-    # DB and Table filters
     with filter_cols_stats_row1[0]:
         all_databases_stats = ['All'] + sorted(history_df['DATABASE_NAME'].unique().tolist())
         selected_database_stats = st.selectbox(
@@ -53,7 +44,6 @@ with tab_refresh_stats:
             key="schema_filter_stats"
         )
 
-    # Initial filtering based on DB and Schema for TABLE_NAME list
     filtered_df_for_table_select = history_df.copy()
     if selected_database_stats != 'All':
         filtered_df_for_table_select = filtered_df_for_table_select[filtered_df_for_table_select['DATABASE_NAME'] == selected_database_stats]
@@ -79,19 +69,19 @@ with tab_refresh_stats:
 
 
     # --- Date Filter Row ---
-    # Define use_current_day_stats BEFORE the columns that use it
-    # This checkbox is independent of the date input, but controls its behavior
-    date_control_cols = st.columns([0.5, 1.5, 1]) # Checkbox, Date Range, Multi-Select Stats to Plot (layout as before)
+    # Define use_current_day_stats_checkbox_value FIRST
+    # so its value is available when the date_input is set up
+    date_control_cols = st.columns([0.5, 1.5, 1]) # Checkbox, Date Range, Multi-Select Stats to Plot (layout)
 
     with date_control_cols[0]:
         st.write("") # Spacer to align the checkbox vertically
-        # Use a clearly defined boolean variable here
+        # The variable `use_current_day_stats_checkbox_value` is defined here
         use_current_day_stats_checkbox_value = st.checkbox(
             "Show Current Day Only",
-            key="current_day_checkbox_stats" # Unique key for this specific checkbox
+            key="current_day_checkbox_stats"
         )
 
-    with date_control_cols[1]: # This column will now contain the date_input
+    with date_control_cols[1]: # This column contains the date_input
         min_data_date_stats = history_df['DATA_TIMESTAMP_DT'].min().date()
         max_data_date_stats = history_df['DATA_TIMESTAMP_DT'].max().date()
         today = pd.to_datetime('today').date()
@@ -99,7 +89,7 @@ with tab_refresh_stats:
         date_input_disabled_stats = False
         date_range_value_stats = (min_data_date_stats, max_data_date_stats)
 
-        # Now `use_current_day_stats_checkbox_value` is defined
+        # Now `use_current_day_stats_checkbox_value` is correctly accessible
         if use_current_day_stats_checkbox_value:
             if today < min_data_date_stats:
                 st.warning(f"No data available for today ({today}). Showing data up to {max_data_date_stats}.")
@@ -130,11 +120,11 @@ with tab_refresh_stats:
         )
         actual_selected_stats_for_plot = [reverse_friendly_stat_labels[label] for label in selected_stats_for_plot_display]
 
+
         if not actual_selected_stats_for_plot:
             st.warning("Please select at least one statistic to plot.")
             actual_selected_stats_for_plot = []
 
-        # Log scale checkbox (keep it here as it affects the chart directly)
         use_log_scale = st.checkbox("Use Logarithmic Scale (X-axis)", key="log_scale_checkbox_stats")
 
 
@@ -149,12 +139,17 @@ with tab_refresh_stats:
     if selected_table_stats != 'All':
         filtered_stats_df = filtered_stats_df[filtered_stats_df['TABLE_NAME'] == selected_table_stats]
 
-    # Apply action type filter
-    if selected_action_type:
+    # Apply action type filter - CORRECTED LOGIC FOR 'All'
+    if 'All' in selected_action_type:
+        filtered_stats_df = filtered_stats_df[
+            filtered_stats_df['REFRESH_ACTION'].isin(history_df['REFRESH_ACTION'].unique().tolist())
+        ]
+    elif selected_action_type: # Only filter if specific actions are chosen (and 'All' isn't)
         filtered_stats_df = filtered_stats_df[filtered_stats_df['REFRESH_ACTION'].isin(selected_action_type)]
-    else:
-        st.warning("No refresh action type selected. Chart will be empty.")
+    else: # If selected_action_type is empty (nothing selected)
+        st.warning("No refresh action type selected. Charts will be empty.")
         filtered_stats_df = pd.DataFrame() # Clear df if no action types selected
+
 
     # Apply date range filter
     if len(stat_date_range) == 2:
@@ -178,7 +173,7 @@ with tab_refresh_stats:
                 table_stats_summary_df[col] = table_stats_summary_df[col].replace(0, np.nan)
 
         if 'NUMDELETEDROWS' in actual_selected_stats_for_plot:
-            table_stats_summary_df['TOTAL_CHANGE_FOR_SORT'] = table_stats_summary_df['NUMDELETEDROWS'] # Prioritize deleted for sorting
+            table_stats_summary_df['TOTAL_CHANGE_FOR_SORT'] = table_stats_summary_df['NUMDELETEDROWS']
             if 'NUMADDEDPARTITIONS' in actual_selected_stats_for_plot:
                 table_stats_summary_df['TOTAL_CHANGE_FOR_SORT'] += table_stats_summary_df['NUMADDEDPARTITIONS']
             table_stats_summary_df = table_stats_summary_df.sort_values(by='TOTAL_CHANGE_FOR_SORT', ascending=False)
@@ -207,7 +202,7 @@ with tab_refresh_stats:
                                    title=f'Top {num_top_tables_stats} Tables: Aggregate Statistics by Refresh Action Type',
                                    labels={
                                        col: friendly_stat_labels[col] for col in actual_selected_stats_for_plot
-                                   } | {'TABLE_NAME': 'Table Name', 'value': 'Count'}, # Combined dict for labels
+                                   } | {'TABLE_NAME': 'Table Name', 'value': 'Count'},
                                    color_discrete_map=stat_color_map,
                                    hover_name='TABLE_NAME'
                                    )
@@ -264,6 +259,3 @@ with tab_refresh_stats:
          st.info("No data to display aggregate refresh statistics after filtering.")
     else:
         st.info("Please select at least one statistic to plot above.")
-
-
-# ... (rest of your app.py content for other tabs)
