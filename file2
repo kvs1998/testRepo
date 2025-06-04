@@ -1,3 +1,7 @@
+# app.py (Focusing only on the REFRESH_STATS tab for clarity)
+
+# ... (Previous code including initial history_df loading and cleaning)
+
 # --- New Tab: REFRESH_STATS ---
 with tab_refresh_stats:
     st.header("Refresh Statistics by Action Type and Table")
@@ -7,23 +11,19 @@ with tab_refresh_stats:
         st.warning("No data loaded from Snowflake. Cannot display refresh statistics.")
         st.stop() # Exit if no data
 
-    # Define the 5 pre-existing columns that represent numerical statistics for plotting
     statistic_cols_for_plot_raw = [
         'NUMINSERTEDROWS', 'NUMDELETEDROWS', 'NUMCOPIEDROWS',
         'NUMADDEDPARTITIONS', 'NUMREMOVEDPARTITIONS'
     ]
     friendly_stat_labels = {
-        'NUMINSERTEDROWS': 'Inserted Rows',
-        'NUMDELETEDROWS': 'Deleted Rows',
-        'NUMCOPIEDROWS': 'Copied Rows',
-        'NUMADDEDPARTITIONS': 'Added Partitions',
-        'NUMREMOVEDPARTITIONS': 'Removed Partitions'
+        'NUMINSERTEDROWS': 'Inserted Rows', 'NUMDELETEDROWS': 'Deleted Rows', 'NUMCOPIEDROWS': 'Copied Rows',
+        'NUMADDEDPARTITIONS': 'Added Partitions', 'NUMREMOVEDPARTITIONS': 'Removed Partitions'
     }
     reverse_friendly_stat_labels = {v: k for k, v in friendly_stat_labels.items()}
 
 
     st.subheader("Apply Filters:")
-    filter_cols_stats_row1 = st.columns([1, 1, 1, 1])
+    filter_cols_stats_row1 = st.columns([1, 1, 1, 1]) # Updated column widths if needed
 
     with filter_cols_stats_row1[0]:
         all_databases_stats = ['All'] + sorted(history_df['DATABASE_NAME'].unique().tolist())
@@ -44,6 +44,7 @@ with tab_refresh_stats:
             key="schema_filter_stats"
         )
 
+    # Initial filtering based on DB and Schema for TABLE_NAME list
     filtered_df_for_table_select = history_df.copy()
     if selected_database_stats != 'All':
         filtered_df_for_table_select = filtered_df_for_table_select[filtered_df_for_table_select['DATABASE_NAME'] == selected_database_stats]
@@ -51,11 +52,13 @@ with tab_refresh_stats:
         filtered_df_for_table_select = filtered_df_for_table_select[filtered_df_for_table_select['SCHEMA_NAME'] == selected_schema_stats]
 
     with filter_cols_stats_row1[2]:
-        all_tables_stats = ['All'] + sorted(filtered_df_for_table_select['TABLE_NAME'].unique().tolist())
-        selected_table_stats = st.selectbox(
-            "Filter by Table:",
-            options=all_tables_stats,
-            key="table_filter_stats"
+        all_tables_stats_options = ['All'] + sorted(filtered_df_for_table_select['TABLE_NAME'].unique().tolist())
+        # --- CHANGE `st.selectbox` to `st.multiselect` HERE ---
+        selected_table_stats = st.multiselect(
+            "Filter by Table(s):", # Changed label to plural
+            options=all_tables_stats_options,
+            default=['All'] if all_tables_stats_options else [], # Default to 'All' if options exist, else empty list
+            key="table_filter_stats_multi" # Changed key to reflect multiselect
         )
 
     with filter_cols_stats_row1[3]:
@@ -68,50 +71,34 @@ with tab_refresh_stats:
         )
 
 
-    # --- Date Filter Row ---
-    # Define use_current_day_stats_checkbox_value FIRST
-    # so its value is available when the date_input is set up
-    date_control_cols = st.columns([0.5, 1.5, 1]) # Checkbox, Date Range, Multi-Select Stats to Plot (layout)
-
+    # --- Date Filter Row (logic unchanged) ---
+    date_control_cols = st.columns([0.5, 1.5, 1])
     with date_control_cols[0]:
-        st.write("") # Spacer to align the checkbox vertically
-        # The variable `use_current_day_stats_checkbox_value` is defined here
+        st.write("")
         use_current_day_stats_checkbox_value = st.checkbox(
             "Show Current Day Only",
             key="current_day_checkbox_stats"
         )
-
-    with date_control_cols[1]: # This column contains the date_input
+    with date_control_cols[1]:
         min_data_date_stats = history_df['DATA_TIMESTAMP_DT'].min().date()
         max_data_date_stats = history_df['DATA_TIMESTAMP_DT'].max().date()
         today = pd.to_datetime('today').date()
-
         date_input_disabled_stats = False
         date_range_value_stats = (min_data_date_stats, max_data_date_stats)
-
-        # Now `use_current_day_stats_checkbox_value` is correctly accessible
         if use_current_day_stats_checkbox_value:
-            if today < min_data_date_stats:
-                st.warning(f"No data available for today ({today}). Showing data up to {max_data_date_stats}.")
-                date_range_value_stats = (max_data_date_stats, max_data_date_stats)
-                date_input_disabled_stats = True
-            elif today > max_data_date_stats:
+            if today < min_data_date_stats or today > max_data_date_stats:
                 st.warning(f"No data available for today ({today}). Showing data up to {max_data_date_stats}.")
                 date_range_value_stats = (max_data_date_stats, max_data_date_stats)
                 date_input_disabled_stats = True
             else:
                 date_range_value_stats = (today, today)
                 date_input_disabled_stats = True
-
         stat_date_range = st.date_input(
             "Select Data Timestamp Range:",
-            value=date_range_value_stats,
-            min_value=min_data_date_stats, max_value=max_data_date_stats,
-            key="date_range_filter_stats",
-            disabled=date_input_disabled_stats
+            value=date_range_value_stats, min_value=min_data_date_stats, max_value=max_data_date_stats,
+            key="date_range_filter_stats", disabled=date_input_disabled_stats
         )
-
-    with date_control_cols[2]: # This column contains the multiselect for stats to plot and log scale checkbox
+    with date_control_cols[2]:
         selected_stats_for_plot_display = st.multiselect(
             "Select Statistics to Plot:",
             options=[friendly_stat_labels[col] for col in statistic_cols_for_plot_raw],
@@ -119,39 +106,46 @@ with tab_refresh_stats:
             key="stats_to_plot_multiselect"
         )
         actual_selected_stats_for_plot = [reverse_friendly_stat_labels[label] for label in selected_stats_for_plot_display]
-
-
         if not actual_selected_stats_for_plot:
             st.warning("Please select at least one statistic to plot.")
             actual_selected_stats_for_plot = []
-
         use_log_scale = st.checkbox("Use Logarithmic Scale (X-axis)", key="log_scale_checkbox_stats")
 
 
     # --- Apply all filters to the base DataFrame for REFRESH_STATS ---
     filtered_stats_df = history_df.copy()
 
-    # Apply database, schema, table filters
+    # Apply database and schema filters
     if selected_database_stats != 'All':
         filtered_stats_df = filtered_stats_df[filtered_stats_df['DATABASE_NAME'] == selected_database_stats]
     if selected_schema_stats != 'All':
         filtered_stats_df = filtered_stats_df[filtered_stats_df['SCHEMA_NAME'] == selected_schema_stats]
-    if selected_table_stats != 'All':
-        filtered_stats_df = filtered_stats_df[filtered_stats_df['TABLE_NAME'] == selected_table_stats]
 
-    # Apply action type filter - CORRECTED LOGIC FOR 'All'
+    # Apply TABLE_NAME filter - CORRECTED LOGIC FOR MULTISELECT
+    if selected_table_stats: # Check if list is not empty
+        if 'All' in selected_table_stats:
+            # If 'All' is selected, include all tables from the current filtered_df
+            pass # No additional filtering needed as 'All' covers everything remaining
+        else:
+            filtered_stats_df = filtered_stats_df[filtered_stats_df['TABLE_NAME'].isin(selected_table_stats)]
+    else: # If selected_table_stats is an empty list (nothing chosen)
+        st.warning("No table(s) selected. Charts will be empty.")
+        filtered_stats_df = pd.DataFrame() # Clear df if no tables chosen
+
+
+    # Apply action type filter (logic for 'All' already handled in previous fix)
     if 'All' in selected_action_type:
         filtered_stats_df = filtered_stats_df[
             filtered_stats_df['REFRESH_ACTION'].isin(history_df['REFRESH_ACTION'].unique().tolist())
         ]
-    elif selected_action_type: # Only filter if specific actions are chosen (and 'All' isn't)
+    elif selected_action_type:
         filtered_stats_df = filtered_stats_df[filtered_stats_df['REFRESH_ACTION'].isin(selected_action_type)]
-    else: # If selected_action_type is empty (nothing selected)
+    else:
         st.warning("No refresh action type selected. Charts will be empty.")
-        filtered_stats_df = pd.DataFrame() # Clear df if no action types selected
+        filtered_stats_df = pd.DataFrame()
 
 
-    # Apply date range filter
+    # Apply date range filter (logic unchanged)
     if len(stat_date_range) == 2:
         stat_start_date = pd.to_datetime(stat_date_range[0])
         stat_end_date = pd.to_datetime(stat_date_range[1]) + pd.Timedelta(days=1)
@@ -259,3 +253,6 @@ with tab_refresh_stats:
          st.info("No data to display aggregate refresh statistics after filtering.")
     else:
         st.info("Please select at least one statistic to plot above.")
+
+
+# ... (Tab 3: Product Analysis code unchanged)
