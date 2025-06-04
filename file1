@@ -1,38 +1,48 @@
-date_filter_col1, date_filter_col2 = st.columns(2) # New columns for date filters
+# app.py (Focusing only on the DT STATE tab's date filter section)
 
-        with date_filter_col1:
-            st.write("") # Spacer
-            use_current_day = st.checkbox("Show Current Day Only", key="current_day_checkbox")
+# ... (Previous code for tab_dt_state, history_df checks, and filter_cols_top)
 
-        with date_filter_col2:
-            # Date Range Filter for Data_Timestamp
-            # Ensure DATA_TIMESTAMP is datetime for min/max
-            history_df['DATA_TIMESTAMP_DT'] = pd.to_datetime(history_df['DATA_TIMESTAMP'])
-            min_date = history_df['DATA_TIMESTAMP_DT'].min().date()
-            max_date = history_df['DATA_TIMESTAMP_DT'].max().date()
+    # --- Date Filter Section ---
+    date_filter_cols = st.columns(2) # New columns for date filters
 
-            # Default value for date_input changes based on checkbox
-            if use_current_day:
-                today = pd.to_datetime('today').date()
-                date_range_value = (today, today)
-                # Disable date input if 'Current Day Only' is checked
+    with date_filter_cols[0]: # This column will now contain the date_input
+        min_data_date = history_df['DATA_TIMESTAMP_DT'].min().date()
+        max_data_date = history_df['DATA_TIMESTAMP_DT'].max().date()
+        today = pd.to_datetime('today').date()
+
+        # Determine default value and disabled state for date_input
+        date_input_disabled = False
+        date_range_value = (min_data_date, max_data_date) # Default to full data range
+
+        if use_current_day: # This variable comes from the checkbox in the other column
+            if today < min_data_date:
+                st.warning(f"No data available for today ({today}). Showing data up to {max_data_date}.")
+                date_range_value = (max_data_date, max_data_date)
+                date_input_disabled = True
+            elif today > max_data_date:
+                st.warning(f"No data available for today ({today}). Showing data up to {max_data_date}.")
+                date_range_value = (max_data_date, max_data_date)
                 date_input_disabled = True
             else:
-                date_range_value = (min_date, max_date)
-                date_input_disabled = False
+                date_range_value = (today, today)
+                date_input_disabled = True
 
-            date_range = st.date_input(
-                "Select Data Timestamp Range:",
-                value=date_range_value,
-                min_value=min_date,
-                max_value=max_date,
-                key="date_range_filter",
-                disabled=date_input_disabled # Disable if current day is checked
-            )
+        date_range = st.date_input(
+            "Select Data Timestamp Range:",
+            value=date_range_value,
+            min_value=min_data_date,
+            max_value=max_data_date,
+            key="date_range_filter",
+            disabled=date_input_disabled
+        )
+
+    with date_filter_cols[1]: # This column will now contain the checkbox
+        st.write("") # Spacer to align the checkbox visually
+        use_current_day = st.checkbox("Show Current Day Only", key="current_day_checkbox")
 
 
-
-
+    # --- Apply all filters to filtered_history_df ---
+    # ... (rest of the filter application logic, which remains the same)
 
 
 
