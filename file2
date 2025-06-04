@@ -1,61 +1,92 @@
-import matplotlib.pyplot as plt
-import numpy as np
+# snowflake_data.py
+import streamlit as st
+from snowflake.snowpark import Session
 import pandas as pd
+import json # Import json for parsing variant
 
-# Sample data (based on the image provided)
-data = {
-    "TABLE_ID": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
-    "EXEC1_TARGET_LAG": [7200, 120, 120, 120, 120, 300, 7200, 7200, 7200, 7200],
-    "EXEC1_MEAN_LAG": [15197, 1308, 1179, 76, 73, 101, 15197, 3886, 3159, 3105],
-    "EXEC2_TARGET_LAG": [7200, 120, 120, 120, 120, 300, 7200, 7200, 7200, 7200],
-    "EXEC2_MEAN_LAG": [15197, 1308, 1180, 76, 73, 101, 15197, 4048, 3142, 3085],
-    "EXEC3_TARGET_LAG": [7200, 120, 120, 120, 120, 300, 7200, 7200, 7200, 7200],
-    "EXEC3_MEAN_LAG": [12659, 1294, 1176, 81, 74, 101, 12659, 4048, 3142, 3085],
-}
+@st.cache_resource
+def get_snowflake_session():
+    """Establishes and caches the Snowflake session."""
+    sf_config = st.secrets["snowflake_dev"]
+    session = Session.builder.configs(sf_config).create()
+    return session
 
-df = pd.DataFrame(data)
+session = get_snowflake_session() # Get the cached session
 
-# Set color scheme
-colors = ['blue', 'green', 'orange']
+@st.cache_data
+def get_dt_refresh_history():
+    """
+    Fetches the full refresh history data from Snowflake.
+    This should be your primary cached data extraction point.
+    """
+    st.info("Fetching refresh history from Snowflake...")
+    hist_df = session.sql(f"""
+        SELECT
+            DATABASE_NAME,
+            SCHEMA_NAME,
+            TABLE_NAME,
+            STATE,
+            STATE_CODE,
+            STATE_MESSAGE,
+            QUERY_ID,
+            DATA_TIMESTAMP,
+            REFRESH_START_TIME,
+            REFRESH_END_TIME,
+            COMPLETITION_TARGET,
+            STATISTICS, -- This is the VARIANT column
+            REFERSH_ACTION, -- Renamed to REFRESH_ACTION for clarity in app
+            REFRESH_TRIGGER,
+            TARGET_LAG_SEC
+        FROM db_name.schema_name.T_DT_REFRESH_HISTORY
+    """).to_pandas()
+    # Ensure REFRESH_ACTION column has the correct name (if it's REFERSH_ACTION in DB)
+    if 'REFERSH_ACTION' in hist_df.columns:
+        hist_df.rename(columns={'REFERSH_ACTION': 'REFRESH_ACTION'}, inplace=True)
 
-# Plot lines for EXEC1, EXEC2, EXEC3
-plt.figure(figsize=(12, 6))
-for i, exec_num in enumerate(["EXEC1", "EXEC2", "EXEC3"]):
-    plt.plot(df["TABLE_ID"], df[f"{exec_num}_MEAN_LAG"], 
-             color=colors[i], linestyle='-', label=f"{exec_num} MEAN LAG")
-    plt.plot(df["TABLE_ID"], df[f"{exec_num}_TARGET_LAG"], 
-             color=colors[i], linestyle='--', alpha=0.6, label=f"{exec_num} TARGET LAG")
+    return hist_df
 
-    # Mark target lags with square markers
-    plt.scatter(df["TABLE_ID"], df[f"{exec_num}_TARGET_LAG"], color=colors[i], marker='s', alpha=0.6)
+# New function to parse the STATISTICS VARIANT
+@st.cache_data
+def parse_refresh_statistics(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Parses the 'STATISTICS' VARIANT column and extracts numerical properties.
+    Returns a new DataFrame with original columns + extracted statistics.
+    """
+    if 'STATISTICS' not in df.columns or df.empty:
+        return df # Return original df if no STATISTICS column or empty
 
-# Highlight zero mean lag values with red 'X'
-zero_mean_mask = (df["EXEC1_MEAN_LAG"] == 0) & (df["EXEC2_MEAN_LAG"] == 0) & (df["EXEC3_MEAN_LAG"] == 0)
-plt.scatter(df.loc[zero_mean_mask, "TABLE_ID"], df.loc[zero_mean_mask, "EXEC1_MEAN_LAG"],
-            color='red', marker='x', s=100, label="Zero Mean Lag")
+    # Define the statistics properties we want to extract
+    stats_properties = [
+        'numInsertedRows', 'numDeletedRows', 'numCopiedRows',
+        'numAddedPartitions', 'numRemovedPartitions'
+    ]
+    # Rename to more user-friendly capitalized names for plotting
+    plot_stat_names = {
+        'numInsertedRows': 'Inserted Rows',
+        'numDeletedRows': 'Deleted Rows',
+        'numCopiedRows': 'Copied Rows',
+        'numAddedPartitions': 'Added Partitions',
+        'numRemovedPartitions': 'Removed Partitions'
+    }
 
-plt.xlabel("TABLE_ID")
-plt.ylabel("Lag Values")
-plt.title("Mean Lag and Target Lag per Execution")
-plt.legend()
-plt.grid(True, linestyle='--', alpha=0.5)
-plt.show()
+    # Create a copy to avoid SettingWithCopyWarning
+    df_copy = df.copy()
+
+    # Function to safely parse JSON and extract property
+    def get_stat_value(stat_json, prop):
+        if pd.isna(stat_json):
+            return 0
+        try:
+            stats_dict = json.loads(stat_json)
+            return stats_dict.get(prop, 0)
+        except json.JSONDecodeError:
+            return 0 # Handle malformed JSON
+
+    # Apply the parsing for each property
+    for prop in stats_properties:
+        df_copy[plot_stat_names[prop]] = df_copy['STATISTICS'].apply(lambda x: get_stat_value(x, prop))
+
+    return df_copy
 
 
-def main(session: Session):
-    # Fully qualified view name (not a table function)
-    dynamic_tables_df = session.table("SNOWFLAKE.INFORMATION_SCHEMA.DYNAMIC_TABLES")
-
-    selected_df = dynamic_tables_df.select(
-        "DATABASE_NAME",
-        "SCHEMA_NAME",
-        "NAME",
-        "TEXT",
-        "REFRESH_MODE",
-        "WAREHOUSE",
-        "STATE",
-        "LAST_REFRESHED",
-        "ROWS"
-    )
-
-    selected_df.show()
+# ... (calculate_table_counts_per_schema_db and calculate_average_refresh_time functions remain)
