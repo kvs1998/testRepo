@@ -1,3 +1,41 @@
+date_filter_col1, date_filter_col2 = st.columns(2) # New columns for date filters
+
+        with date_filter_col1:
+            st.write("") # Spacer
+            use_current_day = st.checkbox("Show Current Day Only", key="current_day_checkbox")
+
+        with date_filter_col2:
+            # Date Range Filter for Data_Timestamp
+            # Ensure DATA_TIMESTAMP is datetime for min/max
+            history_df['DATA_TIMESTAMP_DT'] = pd.to_datetime(history_df['DATA_TIMESTAMP'])
+            min_date = history_df['DATA_TIMESTAMP_DT'].min().date()
+            max_date = history_df['DATA_TIMESTAMP_DT'].max().date()
+
+            # Default value for date_input changes based on checkbox
+            if use_current_day:
+                today = pd.to_datetime('today').date()
+                date_range_value = (today, today)
+                # Disable date input if 'Current Day Only' is checked
+                date_input_disabled = True
+            else:
+                date_range_value = (min_date, max_date)
+                date_input_disabled = False
+
+            date_range = st.date_input(
+                "Select Data Timestamp Range:",
+                value=date_range_value,
+                min_value=min_date,
+                max_value=max_date,
+                key="date_range_filter",
+                disabled=date_input_disabled # Disable if current day is checked
+            )
+
+
+
+
+
+
+
 # app.py
 import streamlit as st
 import pandas as pd
