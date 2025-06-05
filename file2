@@ -10,10 +10,11 @@ with tab_refresh_stats:
 
     if history_df.empty:
         st.warning("No data loaded from Snowflake. Cannot display refresh statistics.")
-        st.stop() # Exit if no data
+        st.stop()
 
     # Define the 5 pre-existing columns for plotting and table display
-    statistic_cols_raw = [ # Renamed to be general
+    # CORRECTED: Consistent variable name `statistic_cols_raw`
+    statistic_cols_raw = [
         'NUMINSERTEDROWS', 'NUMDELETEDROWS', 'NUMCOPIEDROWS',
         'NUMADDEDPARTITIONS', 'NUMREMOVEDPARTITIONS'
     ]
@@ -47,7 +48,6 @@ with tab_refresh_stats:
             key="schema_filter_stats"
         )
 
-    # Initial filtering based on DB and Schema for TABLE_NAME list (this part correctly builds the options for the next multiselect)
     filtered_df_for_table_select_options = history_df.copy()
     if selected_database_stats != 'All':
         filtered_df_for_table_select_options = filtered_df_for_table_select_options[filtered_df_for_table_select_options['DATABASE_NAME'] == selected_database_stats]
@@ -56,7 +56,7 @@ with tab_refresh_stats:
 
     with filter_cols_stats_row1[2]:
         all_tables_stats_options = ['All'] + sorted(filtered_df_for_table_select_options['TABLE_NAME'].unique().tolist())
-        selected_table_stats = st.multiselect( # This remains multiselect for tables
+        selected_table_stats = st.multiselect(
             "Filter by Table(s):",
             options=all_tables_stats_options,
             default=['All'] if all_tables_stats_options else [],
@@ -65,12 +65,13 @@ with tab_refresh_stats:
 
     with filter_cols_stats_row1[3]:
         all_action_types = ['All'] + sorted(history_df['REFRESH_ACTION'].unique().tolist())
-        selected_action_type = st.multiselect( # This is reverted to multiselect
+        selected_action_type = st.multiselect(
             "Filter by Refresh Action Type(s):",
             options=all_action_types,
             default=all_action_types,
             key="action_type_filter_stats_multi"
         )
+
 
     # Date Filter Row
     date_control_cols = st.columns([0.5, 1.5, 1])
@@ -100,10 +101,11 @@ with tab_refresh_stats:
             key="date_range_filter_stats", disabled=date_input_disabled_stats
         )
     with date_control_cols[2]:
+        # CORRECTED: Use `statistic_cols_raw` here for options
         selected_stats_for_plot_display = st.multiselect(
             "Select Statistics to Plot:",
-            options=[friendly_stat_labels[col] for col in statistic_cols_for_plot_raw],
-            default=[friendly_stat_labels[col] for col in statistic_cols_for_plot_raw],
+            options=[friendly_stat_labels[col] for col in statistic_cols_raw], # Changed to statistic_cols_raw
+            default=[friendly_stat_labels[col] for col in statistic_cols_raw], # Changed to statistic_cols_raw
             key="stats_to_plot_multiselect"
         )
         actual_selected_stats_for_plot = [reverse_friendly_stat_labels[label] for label in selected_stats_for_plot_display]
@@ -123,11 +125,10 @@ with tab_refresh_stats:
         filtered_stats_df = filtered_stats_df[filtered_stats_df['SCHEMA_NAME'] == selected_schema_stats]
 
     # Apply TABLE_NAME filter (multi-select logic)
-    if selected_table_stats: # Check if list is not empty
+    if selected_table_stats:
         if 'All' not in selected_table_stats:
             filtered_stats_df = filtered_stats_df[filtered_stats_df['TABLE_NAME'].isin(selected_table_stats)]
-        # Else, if 'All' is in selected_table_stats, no further table filtering is needed
-    else: # If selected_table_stats is an empty list (nothing chosen)
+    else:
         st.warning("No table(s) selected. Display will be empty.")
         filtered_stats_df = pd.DataFrame()
 
@@ -136,9 +137,8 @@ with tab_refresh_stats:
     if selected_action_type:
         if 'All' not in selected_action_type:
             filtered_stats_df = filtered_stats_df[filtered_stats_df['REFRESH_ACTION'].isin(selected_action_type)]
-        # Else, if 'All' is in selected_action_type, no further action type filtering is needed
     else:
-        st.warning("No refresh action type selected. Display will be empty.")
+        st.warning("No refresh action type selected. Charts will be empty.")
         filtered_stats_df = pd.DataFrame()
 
     # Apply date range filter
@@ -153,9 +153,7 @@ with tab_refresh_stats:
     # --- Display Filtered Table ---
     st.divider()
     st.subheader("Filtered Raw Data (Table View)")
-    # Columns to display in the raw data table
-    table_display_columns = ['TABLE_NAME', 'REFRESH_ACTION', 'DATA_TIMESTAMP'] + statistic_cols_raw
-    # Rename for display in the table header
+    table_display_columns = ['TABLE_NAME', 'REFRESH_ACTION', 'DATA_TIMESTAMP'] + statistic_cols_raw # Corrected: using statistic_cols_raw
     display_df_for_table = filtered_stats_df[table_display_columns].rename(columns=friendly_stat_labels)
 
     if not display_df_for_table.empty:
