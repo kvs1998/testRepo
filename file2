@@ -1,15 +1,17 @@
-# app.py (Focusing only on the REFRESH_STATS tab for clarity)
+# app.py (Focusing only on the REFRESH_STATS tab's filter and data handling)
 
-# ... (Previous code including initial history_df loading and cleaning)
+# ... (Previous imports, set_page_config, title, tab definitions)
+# ... (history_df fetching and initial DATA_TIMESTAMP_DT and REFRESH_ACTION cleaning)
 
 # --- New Tab: REFRESH_STATS ---
 with tab_refresh_stats:
     st.header("Refresh Statistics by Action Type and Table")
     st.write("Analyze aggregate row and partition changes, filterable by database, table, and refresh action type.")
 
+    # Primary check if history_df is empty from the start
     if history_df.empty:
         st.warning("No data loaded from Snowflake. Cannot display refresh statistics.")
-        st.stop()
+        st.stop() # Exit if no data
 
     statistic_cols_raw = [
         'NUMINSERTEDROWS', 'NUMDELETEDROWS', 'NUMCOPIEDROWS',
@@ -34,8 +36,11 @@ with tab_refresh_stats:
         )
 
     with filter_cols_stats_row1[1]:
+        # Determine schema options based on selected DB
         if selected_database_stats != 'All':
-            schemas_in_db_stats = ['All'] + sorted(history_df[history_df['DATABASE_NAME'] == selected_database_stats]['SCHEMA_NAME'].unique().tolist())
+            # Check if filtered_df_for_table_select_options might be empty first
+            current_db_schemas = history_df[history_df['DATABASE_NAME'] == selected_database_stats]['SCHEMA_NAME'].unique().tolist()
+            schemas_in_db_stats = ['All'] + sorted(current_db_schemas)
         else:
             schemas_in_db_stats = ['All'] + sorted(history_df['SCHEMA_NAME'].unique().tolist())
         selected_schema_stats = st.selectbox(
@@ -44,6 +49,9 @@ with tab_refresh_stats:
             key="schema_filter_stats"
         )
 
+    # Filtering for TABLE_NAME multiselect options list
+    # This DataFrame is specifically for generating the options for the TABLE_NAME multiselect,
+    # ensuring only relevant tables are shown.
     filtered_df_for_table_select_options = history_df.copy()
     if selected_database_stats != 'All':
         filtered_df_for_table_select_options = filtered_df_for_table_select_options[filtered_df_for_table_select_options['DATABASE_NAME'] == selected_database_stats]
@@ -51,11 +59,20 @@ with tab_refresh_stats:
         filtered_df_for_table_select_options = filtered_df_for_table_select_options[filtered_df_for_table_select_options['SCHEMA_NAME'] == selected_schema_stats]
 
     with filter_cols_stats_row1[2]:
-        all_tables_stats_options = ['All'] + sorted(filtered_df_for_table_select_options['TABLE_NAME'].unique().tolist())
+        # --- Guard against empty DataFrame for generating table options ---
+        if not filtered_df_for_table_select_options.empty:
+            all_tables_stats_options = ['All'] + sorted(filtered_df_for_table_select_options['TABLE_NAME'].unique().tolist())
+            default_tables_selected = ['All'] # Default selection for multiselect
+        else:
+            # If no tables match DB/Schema filters, options list is just 'All' and it's selected
+            all_tables_stats_options = ['All']
+            default_tables_selected = ['All']
+            st.info("No tables found for selected Database/Schema combination.")
+
         selected_table_stats = st.multiselect(
             "Filter by Table(s):",
             options=all_tables_stats_options,
-            default=['All'] if all_tables_stats_options else [],
+            default=default_tables_selected,
             key="table_filter_stats_multi"
         )
 
@@ -71,31 +88,47 @@ with tab_refresh_stats:
 
     # Date Filter Row
     date_control_cols = st.columns([0.5, 1.5, 1])
+
     with date_control_cols[0]:
         st.write("")
         use_current_day_stats_checkbox_value = st.checkbox(
             "Show Current Day Only",
             key="current_day_checkbox_stats"
         )
+
     with date_control_cols[1]:
-        min_data_date_stats = history_df['DATA_TIMESTAMP_DT'].min().date()
-        max_data_date_stats = history_df['DATA_TIMESTAMP_DT'].max().date()
+        # --- Guard against empty history_df for date min/max ---
+        if not history_df.empty: # This is already checked at the very top of the tab, but for robustness
+            min_data_date_stats = history_df['DATA_TIMESTAMP_DT'].min().date()
+            max_data_date_stats = history_df['DATA_TIMESTAMP_DT'].max().date()
+        else:
+            # Fallback for min/max dates if history_df is empty (shouldn't happen here due to top check)
+            min_data_date_stats = pd.to_datetime('2000-01-01').date()
+            max_data_date_stats = pd.to_datetime('today').date()
+
         today = pd.to_datetime('today').date()
+
         date_input_disabled_stats = False
         date_range_value_stats = (min_data_date_stats, max_data_date_stats)
+
         if use_current_day_stats_checkbox_value:
-            if today < min_data_date_stats or today > max_data_date_stats:
+            # If data is available for today, set to today. Otherwise, fall back to max available date.
+            if max_data_date_stats >= today: # Data exists today or in future
+                date_range_value_stats = (today, today)
+            else: # Data ends before today
                 st.warning(f"No data available for today ({today}). Showing data up to {max_data_date_stats}.")
                 date_range_value_stats = (max_data_date_stats, max_data_date_stats)
-                date_input_disabled_stats = True
-            else:
-                date_range_value_stats = (today, today)
-                date_input_disabled_stats = True
+            date_input_disabled_stats = True
+
+
         stat_date_range = st.date_input(
             "Select Data Timestamp Range:",
-            value=date_range_value_stats, min_value=min_data_date_stats, max_value=max_data_date_stats,
-            key="date_range_filter_stats", disabled=date_input_disabled_stats
+            value=date_range_value_stats,
+            min_value=min_data_date_stats, max_value=max_data_date_stats,
+            key="date_range_filter_stats",
+            disabled=date_input_disabled_stats
         )
+
     with date_control_cols[2]:
         selected_stats_for_plot_display = st.multiselect(
             "Select Statistics to Plot:",
@@ -104,13 +137,16 @@ with tab_refresh_stats:
             key="stats_to_plot_multiselect"
         )
         actual_selected_stats_for_plot = [reverse_friendly_stat_labels[label] for label in selected_stats_for_plot_display]
+
         if not actual_selected_stats_for_plot:
             st.warning("Please select at least one statistic to plot.")
             actual_selected_stats_for_plot = []
+
         use_log_scale = st.checkbox("Use Logarithmic Scale (X-axis)", key="log_scale_checkbox_stats")
 
 
     # --- Apply all filters to the base DataFrame for REFRESH_STATS ---
+    # Start with a fresh copy for this filtering chain
     filtered_stats_df = history_df.copy()
 
     # Apply database and schema filters
@@ -120,20 +156,19 @@ with tab_refresh_stats:
         filtered_stats_df = filtered_stats_df[filtered_stats_df['SCHEMA_NAME'] == selected_schema_stats]
 
     # Apply TABLE_NAME filter (multi-select logic)
-    if selected_table_stats:
-        if 'All' not in selected_table_stats:
-            filtered_stats_df = filtered_stats_df[filtered_stats_df['TABLE_NAME'].isin(selected_table_stats)]
-    else:
+    # Check if selected_table_stats is not empty AND 'All' is not selected.
+    if selected_table_stats and 'All' not in selected_table_stats:
+        filtered_stats_df = filtered_stats_df[filtered_stats_df['TABLE_NAME'].isin(selected_table_stats)]
+    elif not selected_table_stats: # If list is empty (user selected nothing)
         st.warning("No table(s) selected. Display will be empty.")
         filtered_stats_df = pd.DataFrame()
 
 
     # Apply REFRESH_ACTION filter (multiselect logic)
-    if selected_action_type:
-        if 'All' not in selected_action_type:
-            filtered_stats_df = filtered_stats_df[filtered_stats_df['REFRESH_ACTION'].isin(selected_action_type)]
-        # Else, if 'All' is in selected_action_type, no further action type filtering is needed
-    else:
+    # Check if selected_action_type is not empty AND 'All' is not selected.
+    if selected_action_type and 'All' not in selected_action_type:
+        filtered_stats_df = filtered_stats_df[filtered_stats_df['REFRESH_ACTION'].isin(selected_action_type)]
+    elif not selected_action_type: # If list is empty (user selected nothing)
         st.warning("No refresh action type selected. Charts will be empty.")
         filtered_stats_df = pd.DataFrame()
 
@@ -157,26 +192,35 @@ with tab_refresh_stats:
 
 
     table_display_columns = ['TABLE_NAME', 'REFRESH_ACTION', 'DATA_TIMESTAMP'] + statistic_cols_raw
-    display_df_for_table = filtered_stats_df[table_display_columns].rename(columns=friendly_stat_labels)
-
-    if not display_df_for_table.empty:
+    
+    # --- Guard against empty filtered_stats_df before creating display_df_for_table ---
+    if not filtered_stats_df.empty:
+        display_df_for_table = filtered_stats_df[table_display_columns].rename(columns=friendly_stat_labels)
+        
         if show_latest_table_data:
-            # Sort by timestamp descending within each table, then pick the first (latest)
-            display_df_for_table = display_df_for_table.sort_values(
-                'DATA_TIMESTAMP', ascending=False
-            ).groupby('Table Name').first().reset_index()
-            # Ensure index is reset so 'Table Name' is a column again, not index.
-            # `first()` also renames columns, so we need to rename back.
-            # Simpler: use idxmax() or drop_duplicates()
-            # Let's use idxmax for a cleaner approach.
             idx = filtered_stats_df.groupby('TABLE_NAME')['DATA_TIMESTAMP_DT'].idxmax()
+            # Ensure the subset selected by .loc includes all necessary columns for renaming
             display_df_for_table = filtered_stats_df.loc[idx, table_display_columns].rename(columns=friendly_stat_labels)
             
             st.info("Displaying only the latest refresh entry for each table.")
 
+        # Default sorting for the table
+        if not show_latest_table_data: # Only apply this multi-sort if not showing latest
+            # Map selected sort column display names to actual DataFrame column names
+            sort_by_actual_cols = [full_reverse_map.get(col_display, col_display) for col_display in selected_sort_columns_display]
+            # Ensure these columns exist in the DataFrame *before* sorting
+            valid_sort_cols = [col for col in sort_by_actual_cols if col in display_df_for_table.columns]
+            
+            if valid_sort_cols: # Only sort if valid columns are selected
+                display_df_for_table = display_df_for_table.sort_values(
+                    by=valid_sort_cols,
+                    ascending=actual_sort_ascending_list # Defined from sort controls above
+                )
+            else:
+                st.warning("Selected sort columns are not available in the filtered data. Defaulting to no sort.")
 
         st.dataframe(display_df_for_table, use_container_width=True)
-    else:
+    else: # filtered_stats_df is empty, so display_df_for_table would be empty
         st.info("No data to display in the table based on current filters.")
 
     st.divider()
@@ -185,135 +229,82 @@ with tab_refresh_stats:
     st.subheader("Aggregate Statistics per Table (Chart View)")
     st.write("Each bar represents a table, segmented by selected statistics. Data is aggregated based on filters.")
 
-    # IMPORTANT: If "Show Latest Data Only" is checked, the chart should use the same filtered data
-    # that is displayed in the table (i.e., latest entries only).
-    # If not checked, it uses the full filtered_stats_df (aggregated by sum).
-    if show_latest_table_data:
-        # Use the latest-only data for the chart, but still aggregate the selected stats
-        # If showing latest, it implies one row per table. So just select relevant columns.
-        if not display_df_for_table.empty and actual_selected_stats_for_plot:
-            # We already have `display_df_for_table` with friendly names from the .rename()
-            # We need to map friendly names back to raw for plotting if we haven't already.
-            # Let's recreate it from filtered_stats_df for robustness in this block.
-            idx_chart = filtered_stats_df.groupby('TABLE_NAME')['DATA_TIMESTAMP_DT'].idxmax()
-            chart_source_df = filtered_stats_df.loc[idx_chart].copy()
-            # Ensure the selected stats columns are numeric for plotting
+    # Guard for empty data before plotting
+    if not filtered_stats_df.empty and actual_selected_stats_for_plot:
+        chart_source_df_for_table_plot = filtered_stats_df.copy() # Start with a fresh copy for chart
+        if show_latest_table_data:
+            idx_chart = chart_source_df_for_table_plot.groupby('TABLE_NAME')['DATA_TIMESTAMP_DT'].idxmax()
+            chart_source_df_for_table_plot = chart_source_df_for_table_plot.loc[idx_chart].copy()
+            # No sum needed as it's already one row per table.
+            # Ensure the selected stats columns are numeric
             for col in statistic_cols_raw: # Convert all raw stats cols to numeric
-                chart_source_df[col] = pd.to_numeric(chart_source_df[col], errors='coerce').fillna(0)
+                chart_source_df_for_table_plot[col] = pd.to_numeric(chart_source_df_for_table_plot[col], errors='coerce').fillna(0)
 
 
-            # No need for groupby().sum() if we are taking the latest entry for each table,
-            # as each table only has one entry.
-            # We still need to filter its columns to only show selected_stats_for_plot
-            chart_data_to_plot = chart_source_df[['TABLE_NAME'] + actual_selected_stats_for_plot].copy()
-
-            if use_log_scale:
-                for col in actual_selected_stats_for_plot:
-                    chart_data_to_plot[col] = chart_data_to_plot[col].replace(0, np.nan)
-
-            # Sorting for chart (e.g., by total deleted, etc., from the latest entry)
-            # You might want to sort by the sum of selected stats from the latest entry
-            if 'NUMDELETEDROWS' in actual_selected_stats_for_plot:
-                chart_data_to_plot['TOTAL_CHANGE_FOR_SORT'] = chart_data_to_plot['NUMDELETEDROWS']
-                if 'NUMADDEDPARTITIONS' in actual_selected_stats_for_plot:
-                    chart_data_to_plot['TOTAL_CHANGE_FOR_SORT'] += chart_data_to_plot['NUMADDEDPARTITIONS']
-                chart_data_to_plot = chart_data_to_plot.sort_values(by='TOTAL_CHANGE_FOR_SORT', ascending=False)
-            else:
-                chart_data_to_plot['TOTAL_SUM_OF_STATS'] = chart_data_to_plot[actual_selected_stats_for_plot].sum(axis=1)
-                chart_data_to_plot = chart_data_to_plot.sort_values(by='TOTAL_SUM_OF_STATS', ascending=False)
-
-            num_top_tables_stats = st.slider(
-                "Show Top N Tables by Combined Statistics (for chart):",
-                min_value=5, max_value=min(100, len(chart_data_to_plot)), value=min(25, len(chart_data_to_plot)),
-                key="num_top_tables_stats_slider"
-            )
-            display_table_stats_df_chart = chart_data_to_plot.head(num_top_tables_stats)
-            ordered_table_names_stats = display_table_stats_df_chart['TABLE_NAME'].tolist()
-
-            stat_color_map = {
-                'NUMINSERTEDROWS': 'lightgreen', 'NUMDELETEDROWS': 'lightcoral', 'NUMCOPIEDROWS': 'lightblue',
-                'NUMADDEDPARTITIONS': 'yellowgreen', 'NUMREMOVEDPARTITIONS': 'salmon'
-            }
-
-            fig_table_stats = px.bar(display_table_stats_df_chart,
-                                       x=actual_selected_stats_for_plot,
-                                       y='TABLE_NAME',
-                                       orientation='h',
-                                       title=f'Top {num_top_tables_stats} Tables: Aggregate Statistics by Refresh Action Type (Latest Only)',
-                                       labels={
-                                           col: friendly_stat_labels[col] for col in actual_selected_stats_for_plot
-                                       } | {'TABLE_NAME': 'Table Name', 'value': 'Count'},
-                                       color_discrete_map=stat_color_map,
-                                       hover_name='TABLE_NAME'
-                                       )
-
-            fig_table_stats.update_layout(barmode='stack', showlegend=True, height=600)
-            fig_table_stats.update_yaxes(categoryorder='array', categoryarray=ordered_table_names_stats)
-
-            if use_log_scale:
-                fig_table_stats.update_xaxes(type='log', title_text="Count (Log Scale)")
-            st.plotly_chart(fig_table_stats, use_container_width=True)
-
-        else: # No data for chart after latest filter
-            st.info("No data to display aggregate refresh statistics after filtering for latest data.")
-    else: # If not showing latest, use the sum aggregation
-        if not filtered_stats_df.empty and actual_selected_stats_for_plot:
-            table_stats_summary_df = filtered_stats_df.groupby('TABLE_NAME')[actual_selected_stats_for_plot].sum().reset_index()
-
-            if use_log_scale:
-                for col in actual_selected_stats_for_plot:
-                    table_stats_summary_df[col] = table_stats_summary_df[col].replace(0, np.nan)
-
-            if 'NUMDELETEDROWS' in actual_selected_stats_for_plot:
-                table_stats_summary_df['TOTAL_CHANGE_FOR_SORT'] = table_stats_summary_df['NUMDELETEDROWS']
-                if 'NUMADDEDPARTITIONS' in actual_selected_stats_for_plot:
-                    table_stats_summary_df['TOTAL_CHANGE_FOR_SORT'] += table_stats_summary_df['NUMADDEDPARTITIONS']
-                table_stats_summary_df = table_stats_summary_df.sort_values(by='TOTAL_CHANGE_FOR_SORT', ascending=False)
-            else:
-                table_stats_summary_df['TOTAL_SUM_OF_STATS'] = table_stats_summary_df[actual_selected_stats_for_plot].sum(axis=1)
-                table_stats_summary_df = table_stats_summary_df.sort_values(by='TOTAL_SUM_OF_STATS', ascending=False)
+        # If not showing latest, sum up stats per table
+        if not show_latest_table_data:
+            chart_data_to_plot = chart_source_df_for_table_plot.groupby('TABLE_NAME')[actual_selected_stats_for_plot].sum().reset_index()
+        else: # If showing latest, chart_source_df_for_table_plot already has one row per table
+            chart_data_to_plot = chart_source_df_for_table_plot[['TABLE_NAME'] + actual_selected_stats_for_plot]
 
 
-            num_top_tables_stats = st.slider(
-                "Show Top N Tables by Combined Statistics (for chart):",
-                min_value=5, max_value=min(100, len(table_stats_summary_df)), value=min(25, len(table_stats_summary_df)),
-                key="num_top_tables_stats_slider" # Use same key as it's the same slider
-            )
-            display_table_stats_df = table_stats_summary_df.head(num_top_tables_stats)
-            ordered_table_names_stats = display_table_stats_df['TABLE_NAME'].tolist()
+        if use_log_scale:
+            for col in actual_selected_stats_for_plot:
+                chart_data_to_plot[col] = chart_data_to_plot[col].replace(0, np.nan)
 
-            stat_color_map = {
-                'NUMINSERTEDROWS': 'lightgreen', 'NUMDELETEDROWS': 'lightcoral', 'NUMCOPIEDROWS': 'lightblue',
-                'NUMADDEDPARTITIONS': 'yellowgreen', 'NUMREMOVEDPARTITIONS': 'salmon'
-            }
-
-            fig_table_stats = px.bar(display_table_stats_df,
-                                       x=actual_selected_stats_for_plot,
-                                       y='TABLE_NAME',
-                                       orientation='h',
-                                       title=f'Top {num_top_tables_stats} Tables: Aggregate Statistics by Refresh Action Type',
-                                       labels={
-                                           col: friendly_stat_labels[col] for col in actual_selected_stats_for_plot
-                                       } | {'TABLE_NAME': 'Table Name', 'value': 'Count'},
-                                       color_discrete_map=stat_color_map,
-                                       hover_name='TABLE_NAME'
-                                       )
-
-            fig_table_stats.update_layout(barmode='stack', showlegend=True, height=600)
-            fig_table_stats.update_yaxes(categoryorder='array', categoryarray=ordered_table_names_stats)
-
-            if use_log_scale:
-                fig_table_stats.update_xaxes(type='log', title_text="Count (Log Scale)")
-            st.plotly_chart(fig_table_stats, use_container_width=True)
-
-        elif actual_selected_stats_for_plot:
-            st.info("No data to display aggregate refresh statistics after filtering.")
+        if 'NUMDELETEDROWS' in actual_selected_stats_for_plot:
+            chart_data_to_plot['TOTAL_CHANGE_FOR_SORT'] = chart_data_to_plot['NUMDELETEDROWS']
+            if 'NUMADDEDPARTITIONS' in actual_selected_stats_for_plot:
+                chart_data_to_plot['TOTAL_CHANGE_FOR_SORT'] += chart_data_to_plot['NUMADDEDPARTITIONS']
+            chart_data_to_plot = chart_data_to_plot.sort_values(by='TOTAL_CHANGE_FOR_SORT', ascending=False)
         else:
-            st.info("Please select at least one statistic to plot above.")
+            chart_data_to_plot['TOTAL_SUM_OF_STATS'] = chart_data_to_plot[actual_selected_stats_for_plot].sum(axis=1)
+            chart_data_to_plot = chart_data_to_plot.sort_values(by='TOTAL_SUM_OF_STATS', ascending=False)
+
+        num_top_tables_stats = st.slider(
+            "Show Top N Tables by Combined Statistics (for chart):",
+            min_value=5, max_value=min(100, len(chart_data_to_plot)), value=min(25, len(chart_data_to_plot)),
+            key="num_top_tables_stats_slider"
+        )
+        display_table_stats_df_chart = chart_data_to_plot.head(num_top_tables_stats)
+        ordered_table_names_stats = display_table_stats_df_chart['TABLE_NAME'].tolist()
+
+        stat_color_map = {
+            'NUMINSERTEDROWS': 'lightgreen', 'NUMDELETEDROWS': 'lightcoral', 'NUMCOPIEDROWS': 'lightblue',
+            'NUMADDEDPARTITIONS': 'yellowgreen', 'NUMREMOVEDPARTITIONS': 'salmon'
+        }
+
+        fig_table_stats = px.bar(display_table_stats_df_chart,
+                                   x=actual_selected_stats_for_plot,
+                                   y='TABLE_NAME',
+                                   orientation='h',
+                                   title=f'Top {num_top_tables_stats} Tables: Aggregate Statistics by Refresh Action Type',
+                                   labels={
+                                       col: friendly_stat_labels[col] for col in actual_selected_stats_for_plot
+                                   } | {'TABLE_NAME': 'Table Name', 'value': 'Count'},
+                                   color_discrete_map=stat_color_map,
+                                   hover_name='TABLE_NAME'
+                                   )
+
+        fig_table_stats.update_layout(barmode='stack', showlegend=True, height=600)
+        fig_table_stats.update_yaxes(categoryorder='array', categoryarray=ordered_table_names_stats)
+
+        if use_log_scale:
+            fig_table_stats.update_xaxes(type='log', title_text="Count (Log Scale)")
+            st.info("Logarithmic scale applied to X-axis to better visualize large differences.")
+        else:
+            fig_table_stats.update_xaxes(title_text="Count (Rows/Partitions)")
+
+        st.plotly_chart(fig_table_stats, use_container_width=True)
+
+    elif actual_selected_stats_for_plot:
+        st.info("No data to display aggregate refresh statistics after filtering.")
+    else:
+        st.info("Please select at least one statistic to plot above.")
 
 
     st.divider()
-    # --- Chart 2: Stacked Horizontal Bar Chart by REFRESH_ACTION (aggregated across filtered tables) ---
+    # --- Chart 2: Stacked Horizontal Bar Chart by REFRESH_ACTION ---
     st.subheader("Aggregate Statistics by Refresh Action Type (Filtered)")
     st.write("This chart shows the total count for each statistic, summed across all filtered tables.")
 
@@ -347,6 +338,5 @@ with tab_refresh_stats:
          st.info("No data to display aggregate refresh statistics after filtering.")
     else:
         st.info("Please select at least one statistic to plot above.")
-
 
 # ... (Tab 3: Product Analysis code unchanged)
