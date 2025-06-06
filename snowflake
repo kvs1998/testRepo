@@ -1,66 +1,5 @@
--- CREATE TABLE STATEMENT for T_DYNAMIC_TABLE_REFRESH_HISTORY_FLAT
--- Run this ONCE in your Snowflake environment before running the stored procedure.
--- Replace YOUR_DB and YOUR_SCHEMA with your actual database and schema names.
-
-CREATE TABLE YOUR_DB.YOUR_SCHEMA.T_DYNAMIC_TABLE_REFRESH_HISTORY_FLAT (
-    -- Metadata about the collection itself
-    COLLECTION_TIMESTAMP TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(), -- When this record was captured by the procedure
-
-    -- Core Dynamic Table Identifiers
-    DATABASE_NAME TEXT,
-    SCHEMA_NAME TEXT,
-    TABLE_NAME TEXT,
-    QUALIFIED_NAME TEXT, -- Fully qualified name of the dynamic table
-
-    -- Refresh State and Details
-    STATE TEXT, -- Status of the refresh (SUCCEEDED, FAILED, EXECUTING, etc.)
-    STATE_CODE TEXT,
-    STATE_MESSAGE TEXT,
-    QUERY_ID TEXT, -- Unique ID of the refresh SQL statement
-
-    -- Timestamps
-    DATA_TIMESTAMP TIMESTAMP_NTZ,      -- Transactional timestamp when the refresh data was evaluated
-    REFRESH_START_TIME TIMESTAMP_NTZ,  -- Time when the refresh job started
-    REFRESH_END_TIME TIMESTAMP_NTZ,    -- Time when the refresh completed (NULL if still executing)
-    COMPLETION_TARGET TIMESTAMP_NTZ,   -- Time by which refresh should complete to meet TARGET_LAG
-
-    -- Dependency Details (extracted from LAST_COMPLETED_DEPENDENCY OBJECT)
-    LAST_COMPLETED_DEPENDENCY_QUALIFIED_NAME TEXT,
-    LAST_COMPLETED_DEPENDENCY_DATA_TIMESTAMP TIMESTAMP_NTZ,
-
-    -- Statistics (extracted from STATISTICS OBJECT)
-    NUMINSERTEDROWS NUMBER,
-    NUMDELETEDROWS NUMBER,
-    NUMCOPIEDROWS NUMBER,
-    NUMADDEDPARTITIONS NUMBER,
-    NUMREMOVEDPARTITIONS NUMBER,
-
-    -- Refresh Action & Trigger
-    REFRESH_ACTION TEXT, -- Why the refresh happened (INCREMENTAL, FULL, NO_DATA, REINITIALIZE)
-    REFRESH_TRIGGER TEXT, -- How the refresh was initiated (SCHEDULED, MANUAL, CREATION)
-    
-    -- Lag Metrics
-    TARGET_LAG_SEC NUMBER, -- Target lag value for the dynamic table at time of refresh
-
-    -- Graph History Reference
-    GRAPH_HISTORY_VALID_FROM TIMESTAMP_NTZ, -- Timestamp reference for DYNAMIC_TABLE_GRAPH_HISTORY
-
-
-    -- Primary Key for Deduplication and Uniqueness
-    -- This composite key uniquely identifies a specific refresh event at a given collection point.
-    -- (QUALIFIED_NAME, DATA_TIMESTAMP, REFRESH_START_TIME) is a good logical primary key
-    -- for a refresh event. Adding QUERY_ID makes it even more robust if available.
-    -- COLLECTION_TIMESTAMP is crucial because you might collect multiple times and want
-    -- to know which snapshot recorded which state transition if updating.
-    PRIMARY KEY (COLLECTION_TIMESTAMP, QUERY_ID, QUALIFIED_NAME, DATA_TIMESTAMP, REFRESH_START_TIME)
-);
-
--- Optional: Add clustering keys for query performance if your dashboard frequently filters/sorts by these columns
--- Example: CLUSTER BY (QUALIFIED_NAME, DATA_TIMESTAMP);
-
-
-
-
+-- Main Collection Stored Procedure - UPDATED with simplified Variant Extraction
+-- Replace YOUR_DB and YOUR_SCHEMA
 
 CREATE OR REPLACE PROCEDURE YOUR_DB.YOUR_SCHEMA.SP_COLLECT_DT_REFRESH_HISTORY(
     P_DATABASE_NAME VARCHAR,
@@ -79,18 +18,14 @@ DECLARE
     lv_start_timestamp TIMESTAMP_LTZ;
     lv_end_timestamp TIMESTAMP_LTZ := CURRENT_TIMESTAMP();
     lv_error_message VARCHAR;
-    lv_filter_provided BOOLEAN := FALSE; -- Flag to track if any specific filter was provided
+    lv_filter_provided BOOLEAN := FALSE;
 BEGIN
-    -- Step 1: Validate input parameters for specificity
     IF (:P_DATABASE_NAME IS NULL AND :P_SCHEMA_NAME IS NULL AND :P_TABLE_NAME IS NULL) THEN
         RETURN 'ERROR: At least one of P_DATABASE_NAME, P_SCHEMA_NAME, or P_TABLE_NAME must be provided (cannot be NULL) for collection.';
     END IF;
 
-    -- Step 2: Calculate start timestamp
     lv_start_timestamp := DATEADD(day, -:P_COLLECT_FROM_LAST_DAYS, :lv_end_timestamp);
 
-    -- Step 3: Construct arguments for DYNAMIC_TABLE_REFRESH_HISTORY table function
-    -- This section aims to build the most specific filter possible
     IF (:P_DATABASE_NAME IS NOT NULL AND :P_SCHEMA_NAME IS NOT NULL AND :P_TABLE_NAME IS NOT NULL) THEN
         lv_func_args := 'NAME => ''' || :P_DATABASE_NAME || '.' || :P_SCHEMA_NAME || '.' || :P_TABLE_NAME || '''';
         lv_filter_provided := TRUE;
@@ -107,28 +42,22 @@ BEGIN
         lv_func_args := 'NAME_PREFIX => ''' || :P_DATABASE_NAME || '''';
         lv_filter_provided := TRUE;
     ELSEIF (:P_SCHEMA_NAME IS NOT NULL) THEN
-        -- Note: Filtering by SCHEMA_NAME alone with NAME_PREFIX might bring tables from other DBs
-        -- with the same schema name. This is an accepted behavior per the function definition.
         lv_func_args := 'NAME_PREFIX => ''' || :P_SCHEMA_NAME || '''';
         lv_filter_provided := TRUE;
     END IF;
 
-    -- If no specific name filter could be constructed (e.g., only RESULT_LIMIT, DATA_TIMESTAMP_START are implicitly passed),
-    -- and we already returned for (NULL,NULL,NULL), this check ensures lv_func_args is indeed populated if a specific parameter was given.
     IF (NOT lv_filter_provided) THEN
          RETURN 'ERROR: Invalid combination of NULL parameters provided. Please provide a specific DB, Schema, or Table name for collection.';
     END IF;
 
 
-    -- Add timestamp range and high RESULT_LIMIT
     IF (lv_func_args != '') THEN
         lv_func_args := lv_func_args || ', ';
     END IF;
     lv_func_args := lv_func_args || 'DATA_TIMESTAMP_START => ''' || :lv_start_timestamp || '''::TIMESTAMP_LTZ, ';
     lv_func_args := lv_func_args || 'DATA_TIMESTAMP_END => ''' || :lv_end_timestamp || '''::TIMESTAMP_LTZ, ';
-    lv_func_args := lv_func_args || 'RESULT_LIMIT => 100000'; -- High limit
+    lv_func_args := lv_func_args || 'RESULT_LIMIT => 100000';
 
-    -- Step 4: Execute MERGE INTO statement
     EXECUTE IMMEDIATE '
         MERGE INTO YOUR_DB.YOUR_SCHEMA.T_DYNAMIC_TABLE_REFRESH_HISTORY_FLAT AS target_table
         USING (
@@ -146,21 +75,23 @@ BEGIN
                 dtrh.REFRESH_START_TIME::TIMESTAMP_NTZ AS REFRESH_START_TIME,
                 dtrh.REFRESH_END_TIME::TIMESTAMP_NTZ AS REFRESH_END_TIME,
                 dtrh.COMPLETION_TARGET::TIMESTAMP_NTZ AS COMPLETION_TARGET,
-                dep.value:qualified_name::TEXT AS LAST_COMPLETED_DEPENDENCY_QUALIFIED_NAME,
-                dep.value:data_timestamp::TIMESTAMP_NTZ AS LAST_COMPLETED_DEPENDENCY_DATA_TIMESTAMP,
-                stats.value:numInsertedRows::NUMBER AS NUMINSERTEDROWS,
-                stats.value:numDeletedRows::NUMBER AS NUMDELETEDROWS,
-                stats.value:numCopiedRows::NUMBER AS NUMCOPIEDROWS,
-                stats.value:numAddedPartitions::NUMBER AS NUMADDEDPARTITIONS,
-                stats.value:numRemovedPartitions::NUMBER AS NUMREMOVEDPARTITIONS,
+                
+                -- Directly access properties from VARIANT, handle NULLs using GET_PATH or COALESCE
+                dtrh.LAST_COMPLETED_DEPENDENCY:qualified_name::TEXT AS LAST_COMPLETED_DEPENDENCY_QUALIFIED_NAME,
+                dtrh.LAST_COMPLETED_DEPENDENCY:data_timestamp::TIMESTAMP_NTZ AS LAST_COMPLETED_DEPENDENCY_DATA_TIMESTAMP,
+                
+                dtrh.STATISTICS:numInsertedRows::NUMBER AS NUMINSERTEDROWS,
+                dtrh.STATISTICS:numDeletedRows::NUMBER AS NUMDELETEDROWS,
+                dtrh.STATISTICS:numCopiedRows::NUMBER AS NUMCOPIEDROWS,
+                dtrh.STATISTICS:numAddedPartitions::NUMBER AS NUMADDEDPARTITIONS,
+                dtrh.STATISTICS:numRemovedPartitions::NUMBER AS NUMREMOVEDPARTITIONS,
+                
                 dtrh.REFRESH_ACTION,
                 dtrh.REFRESH_TRIGGER,
                 dtrh.TARGET_LAG_SEC,
                 dtrh.GRAPH_HISTORY_VALID_FROM::TIMESTAMP_NTZ AS GRAPH_HISTORY_VALID_FROM
             FROM
-                TABLE(INFORMATION_SCHEMA.DYNAMIC_TABLE_REFRESH_HISTORY(' || lv_func_args || ')) dtrh,
-                LATERAL FLATTEN(INPUT => dtrh.LAST_COMPLETED_DEPENDENCY, OUTER => TRUE) dep,
-                LATERAL FLATTEN(INPUT => dtrh.STATISTICS, OUTER => TRUE) stats
+                TABLE(INFORMATION_SCHEMA.DYNAMIC_TABLE_REFRESH_HISTORY(' || lv_func_args || ')) dtrh
         ) AS source_data
         ON target_table.QUERY_ID = source_data.QUERY_ID
         AND target_table.QUALIFIED_NAME = source_data.QUALIFIED_NAME
@@ -202,7 +133,6 @@ BEGIN
             );
     ';
 
-    -- Get the merge statistics (optional, but good for auditing)
     SELECT
         "number of rows inserted" || ' inserted, ' ||
         "number of rows updated" || ' updated.'
