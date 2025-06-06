@@ -55,14 +55,14 @@ with tab1:
         selected_schema_overview = st.selectbox(
             "Schema:", options=schemas_in_db_overview, key="schema_filter_overview"
         )
-    with overview_filter_cols1[2]: # Date Range Input
+    with overview_filter_cols1[2]:
         min_data_date_overview = history_df['DATA_TIMESTAMP_DT'].min().date()
         max_data_date_overview = history_df['DATA_TIMESTAMP_DT'].max().date()
         today = pd.to_datetime('today').date()
         date_input_disabled_overview = False
         date_range_default_value_overview = (min_data_date_overview, max_data_date_overview)
 
-        if st.session_state.get('use_current_day_overview_checkbox', False): # Check session state for checkbox value
+        if st.session_state.get('use_current_day_overview_checkbox', False):
             if max_data_date_overview >= today:
                 date_range_default_value_overview = (today, today)
             else:
@@ -76,9 +76,8 @@ with tab1:
             key="date_range_filter_overview", disabled=date_input_disabled_overview
         )
         
-    with overview_filter_cols2[0]: # Date Checkbox
-        st.write("") # Spacer
-        # The actual checkbox, its value will be stored in session state
+    with overview_filter_cols2[0]:
+        st.write("")
         st.checkbox("Show Current Day Only", key="use_current_day_overview_checkbox")
 
     st.markdown("---")
@@ -102,51 +101,142 @@ with tab1:
         if filtered_history_df_overview.empty:
              st.info("No data found for the selected date range after other filters.", icon="ℹ️")
 
+
     # Final check for empty DataFrame after all filters
     if filtered_history_df_overview.empty:
         st.warning("No data available based on current filter selections. Please adjust your filters.", icon="⚠️")
     else:
-        # --- Tables Count per DB and Schema (New location) ---
-        st.subheader("Tables Count per Database and Schema")
-        # Ensure only DBs/Schemas in current filtered data are shown
-        table_counts_df_overview = filtered_history_df_overview.groupby(['DATABASE_NAME', 'SCHEMA_NAME'])['TABLE_NAME'].nunique().reset_index()
-        table_counts_df_overview.rename(columns={'TABLE_NAME': 'Table Count'}, inplace=True)
-        table_counts_df_overview['Database.Schema'] = table_counts_df_overview['DATABASE_NAME'] + '.' + table_counts_df_overview['SCHEMA_NAME']
-        
-        # Sort by table count descending
-        table_counts_df_overview = table_counts_df_overview.sort_values(by='Table Count', ascending=False)
-        
-        fig_table_counts_overview = px.bar(
-            table_counts_df_overview, 
-            x='Table Count', 
-            y='Database.Schema', 
-            orientation='h',
-            title='Number of Unique Tables per Database.Schema',
-            labels={'Database.Schema': 'Database.Schema', 'Table Count': 'Count of Tables'}
-        )
-        fig_table_counts_overview.update_yaxes(categoryorder="total ascending") # Ensures bars are sorted by count
-        st.plotly_chart(fig_table_counts_overview, use_container_width=True)
-        
+        # --- Main Overview Charts Section ---
+        overview_main_chart_cols = st.columns([0.5, 0.5]) # Left for KPIs, Right for Pie Chart
+
+        with overview_main_chart_cols[0]: # Left Column for KPIs
+            kpi_header_kpis_col = st.columns([0.7, 0.3])
+            with kpi_header_kpis_col[0]:
+                st.subheader("Key Refresh Status Summary")
+            with kpi_header_kpis_col[1]:
+                st.write("")
+                # New Checkbox for "Latest State KPIs" - Default to TRUE (per table basis)
+                show_latest_aggregate_kpis = st.checkbox(
+                    "Show Latest Aggregate KPIs", value=True, key="latest_aggregate_kpis_overview"
+                )
+
+            # --- KPI Calculation and Display Logic ---
+            if show_latest_aggregate_kpis:
+                st.write("Displaying KPIs calculated from the latest refresh entry per table.")
+                # Get the latest entry for each table within the filtered data
+                idx_latest_per_table = filtered_history_df_overview.groupby('TABLE_NAME')['DATA_TIMESTAMP_DT'].idxmax()
+                latest_refreshes_df = filtered_history_df_overview.loc[idx_latest_per_table].copy()
+
+                if not latest_refreshes_df.empty:
+                    state_counts_kpi_latest = latest_refreshes_df['STATE'].value_counts()
+                    total_tables_kpi_latest = latest_refreshes_df['TABLE_NAME'].nunique() # Count unique tables for this context
+
+                    failed_count_kpi = state_counts_kpi_latest.get("FAILED", 0) + state_counts_kpi_latest.get("UPSTREAM_FAILED", 0)
+                    succeeded_count_kpi = state_counts_kpi_latest.get("SUCCEEDED", 0)
+                    executing_count_kpi = state_counts_kpi_latest.get("EXECUTING", 0)
+
+                    # Display the KPI Metrics (always using st.markdown)
+                    col_failed_kpi, col_succeeded_kpi, col_executing_kpi = st.columns(3)
+                    with col_failed_kpi:
+                        st.markdown(f"<p style='font-size:14px; color:red; margin-bottom:0;'>Total Failed/Upstream Failed</p>", unsafe_allow_html=True)
+                        st.markdown(f"<h3 style='margin-top:0;'>{failed_count_kpi} tables</h3>", unsafe_allow_html=True)
+                        if total_tables_kpi_latest > 0:
+                            st.markdown(f"<p style='font-size:12px; color:red;'>{failed_count_kpi/total_tables_kpi_latest:.1%}</p>", unsafe_allow_html=True)
+                    with col_succeeded_kpi:
+                        st.markdown(f"<p style='font-size:14px; color:green; margin-bottom:0;'>Succeeded</p>", unsafe_allow_html=True)
+                        st.markdown(f"<h3 style='margin-top:0;'>{succeeded_count_kpi} tables</h3>", unsafe_allow_html=True)
+                        if total_tables_kpi_latest > 0:
+                            st.markdown(f"<p style='font-size:12px; color:green;'>{succeeded_count_kpi/total_tables_kpi_latest:.1%}</p>", unsafe_allow_html=True)
+                    with col_executing_kpi:
+                        st.markdown(f"<p style='font-size:14px; color:purple; margin-bottom:0;'>Executing</p>", unsafe_allow_html=True)
+                        st.markdown(f"<h3 style='margin-top:0;'>{executing_count_kpi} tables</h3>", unsafe_allow_html=True)
+                else:
+                    st.info("No data available for latest KPIs based on current filters.", icon="ℹ️")
+
+            else: # Show aggregate KPIs (sum across all refreshes within filters)
+                st.write("Displaying KPIs aggregated across all historical refresh entries.")
+                state_counts_kpi_all = filtered_history_df_overview['STATE'].value_counts()
+                total_tables_kpi_all_refreshes = state_counts_kpi_all.sum() # Total refresh entries
+                total_unique_tables_all_refreshes = filtered_history_df_overview['TABLE_NAME'].nunique() # Unique tables in this filtered view
+
+                failed_count_kpi = state_counts_kpi_all.get("FAILED", 0) + state_counts_kpi_all.get("UPSTREAM_FAILED", 0)
+                succeeded_count_kpi = state_counts_kpi_all.get("SUCCEEDED", 0)
+                executing_count_kpi = state_counts_kpi_all.get("EXECUTING", 0)
+
+                col_failed_kpi, col_succeeded_kpi, col_executing_kpi = st.columns(3)
+                with col_failed_kpi:
+                    st.markdown(f"<p style='font-size:14px; color:red; margin-bottom:0;'>Total Failed/Upstream Failed</p>", unsafe_allow_html=True)
+                    st.markdown(f"<h3 style='margin-top:0;'>{failed_count_kpi} refreshes</h3>", unsafe_allow_html=True) # Changed to refreshes
+                    if total_tables_kpi_all_refreshes > 0:
+                        st.markdown(f"<p style='font-size:12px; color:red;'>{failed_count_kpi/total_tables_kpi_all_refreshes:.1%}</p>", unsafe_allow_html=True)
+                with col_succeeded_kpi:
+                    st.markdown(f"<p style='font-size:14px; color:green; margin-bottom:0;'>Succeeded</p>", unsafe_allow_html=True)
+                    st.markdown(f"<h3 style='margin-top:0;'>{succeeded_count_kpi} refreshes</h3>", unsafe_allow_html=True)
+                    if total_tables_kpi_all_refreshes > 0:
+                        st.markdown(f"<p style='font-size:12px; color:green;'>{succeeded_count_kpi/total_tables_kpi_all_refreshes:.1%}</p>", unsafe_allow_html=True)
+                with col_executing_kpi:
+                    st.markdown(f"<p style='font-size:14px; color:purple; margin-bottom:0;'>Executing</p>", unsafe_allow_html=True)
+                    st.markdown(f"<h3 style='margin-top:0;'>{executing_count_kpi} refreshes</h3>", unsafe_allow_html=True)
+            
+            st.info(f"Summary for {total_unique_tables_all_refreshes} unique tables and {total_tables_kpi_all_refreshes} refresh entries.", icon="ℹ️")
+
+
+        with overview_main_chart_cols[1]: # Right Column for Pie Chart
+            st.subheader("Tables per Database and Schema")
+            st.write("Distribution of unique tables across filtered databases and schemas.")
+            
+            # Ensure only DBs/Schemas in current filtered data are shown
+            table_counts_df_overview = filtered_history_df_overview.groupby(['DATABASE_NAME', 'SCHEMA_NAME'])['TABLE_NAME'].nunique().reset_index()
+            table_counts_df_overview.rename(columns={'TABLE_NAME': 'Table Count'}, inplace=True)
+            table_counts_df_overview['Database.Schema'] = table_counts_df_overview['DATABASE_NAME'] + '.' + table_counts_df_overview['SCHEMA_NAME']
+            
+            if not table_counts_df_overview.empty:
+                # If there are too many slices, it's better to show a bar chart or aggregate 'Other'
+                if len(table_counts_df_overview) > 10: # Heuristic: if more than 10 slices, too cluttered
+                    st.info("Too many schemas for a clear pie chart. Displaying as a bar chart.", icon="ℹ️")
+                    fig_table_counts_overview = px.bar(
+                        table_counts_df_overview.sort_values('Table Count', ascending=True), # Sort for bar chart
+                        x='Table Count', 
+                        y='Database.Schema', 
+                        orientation='h',
+                        title='Number of Unique Tables per Database.Schema',
+                        labels={'Database.Schema': 'Database.Schema', 'Table Count': 'Count of Tables'}
+                    )
+                    fig_table_counts_overview.update_yaxes(categoryorder="total ascending")
+                else:
+                    fig_table_counts_overview = px.pie(
+                        table_counts_df_overview, 
+                        values='Table Count', 
+                        names='Database.Schema', 
+                        title='Number of Unique Tables per Database.Schema',
+                        hole=0.3
+                    )
+                    fig_table_counts_overview.update_traces(textposition='inside', textinfo='percent+label')
+
+                st.plotly_chart(fig_table_counts_overview, use_container_width=True)
+            else:
+                st.info("No data to display table counts per DB/Schema.", icon="ℹ️")
+
         st.divider()
 
-        # --- Key Refresh Status Summary (Enhanced and Moved Here) ---
-        kpi_header_cols_overview = st.columns([0.7, 0.3])
-        with kpi_header_cols_overview[0]:
-            st.subheader("Key Refresh Status Summary")
-        with kpi_header_cols_overview[1]:
-            st.write("")
-            show_kpi_per_table_overview = st.checkbox(
-                "Show KPI per Table (Filtered Data)", value=True, key="kpi_per_table_overview" # DEFAULTED TO TRUE
-            )
+        # --- Detailed KPI per Table (Moved to separate section) ---
+        st.subheader("Detailed Key Refresh Status per Table")
+        st.write("View individual KPI metrics for each table within the filtered dataset.")
 
-        if show_kpi_per_table_overview:
-            st.write("Displaying key refresh metrics for each table based on current filters.")
+        kpi_per_table_checkbox_cols_overview = st.columns([1,1]) # Layout for checkbox
+        with kpi_per_table_checkbox_cols_overview[0]:
+             # This checkbox controls the display of this detailed table section.
+             # It's independent of the aggregate/latest KPIs shown above.
+             show_detailed_kpi_per_table_df_overview = st.checkbox(
+                 "Show Detailed KPI Table", value=False, key="show_detailed_kpi_per_table_df_overview"
+             )
+        
+        if show_detailed_kpi_per_table_df_overview:
             kpi_per_table_df_overview = filtered_history_df_overview.groupby('TABLE_NAME').agg(
                 Total_Refreshes=('STATE', 'count'),
                 Succeeded_Count=('STATE', lambda x: (x == 'SUCCEEDED').sum()),
                 Failed_Count=('STATE', lambda x: (x.isin(['FAILED', 'UPSTREAM_FAILED'])).sum()),
                 Executing_Count=('STATE', lambda x: (x == 'EXECUTING').sum()),
-                # Get the latest state for each table within the filtered data
                 Latest_State=('DATA_TIMESTAMP_DT', lambda x: filtered_history_df_overview.loc[x.idxmax(), 'STATE'])
             ).reset_index()
 
@@ -163,37 +253,11 @@ with tab1:
             )
 
             st.dataframe(kpi_per_table_df_overview, use_container_width=True)
-
-        else: # Show aggregate KPIs
-            st.write("Displaying aggregate key refresh metrics for all filtered tables.")
-            state_counts_kpi = filtered_history_df_overview['STATE'].value_counts()
-            total_tables_kpi = state_counts_kpi.sum()
-
-            col_failed_kpi, col_succeeded_kpi, col_executing_kpi = st.columns(3)
-
-            with col_failed_kpi:
-                failed_count_kpi = state_counts_kpi.get("FAILED", 0) + state_counts_kpi.get("UPSTREAM_FAILED", 0)
-                st.markdown(f"<p style='font-size:14px; color:red; margin-bottom:0;'>Total Failed/Upstream Failed</p>", unsafe_allow_html=True)
-                st.markdown(f"<h3 style='margin-top:0;'>{failed_count_kpi} tables</h3>", unsafe_allow_html=True)
-                if total_tables_kpi > 0:
-                    st.markdown(f"<p style='font-size:12px; color:red;'>{failed_count_kpi/total_tables_kpi:.1%}</p>", unsafe_allow_html=True)
-
-            with col_succeeded_kpi:
-                succeeded_count_kpi = state_counts_kpi.get("SUCCEEDED", 0)
-                st.markdown(f"<p style='font-size:14px; color:green; margin-bottom:0;'>Succeeded</p>", unsafe_allow_html=True)
-                st.markdown(f"<h3 style='margin-top:0;'>{succeeded_count_kpi} tables</h3>", unsafe_allow_html=True)
-                if total_tables_kpi > 0:
-                    st.markdown(f"<p style='font-size:12px; color:green;'>{succeeded_count_kpi/total_tables_kpi:.1%}</p>", unsafe_allow_html=True)
-
-            with col_executing_kpi:
-                executing_count_kpi = state_counts_kpi.get("EXECUTING", 0)
-                st.markdown(f"<p style='font-size:14px; color:purple; margin-bottom:0;'>Executing</p>", unsafe_allow_html=True)
-                st.markdown(f"<h3 style='margin-top:0;'>{executing_count_kpi} tables</h3>", unsafe_allow_html=True)
-        
-        st.divider()
+        else:
+            st.info("Check 'Show Detailed KPI Table' to view KPIs per table.", icon="ℹ️")
 
 
-# --- Tab "DT STATE": Dedicated Dynamic Table State Analysis ---
+# --- Tab "DT STATE": Dedicated Dynamic Table State Analysis (KPI section removed) ---
 with tab_dt_state:
     st.header("Dynamic Table Refresh History & Analysis")
 
