@@ -2,27 +2,18 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import numpy as np # For np.nan handling
-
-# Import the functions from your module
-import snowflake_data
+import numpy as np
 
 st.set_page_config(layout="wide", page_title="Dynamic Table Dashboard", icon="📊")
 st.title("Dynamic Table Refresh Status Dashboard")
 
 # --- Global Data Loading and Initial Cleaning ---
-# This data is cached and loaded once when the app starts or inputs change.
 history_df = snowflake_data.get_dt_refresh_history()
 
-# Perform initial data cleaning and preparation that all tabs might use
 if not history_df.empty:
-    # Handle potential None/NaN values in REFRESH_ACTION for sorting/filtering
     history_df['REFRESH_ACTION'] = history_df['REFRESH_ACTION'].fillna('N/A').astype(str)
-    # Convert DATA_TIMESTAMP to datetime for easier date filtering operations
     history_df['DATA_TIMESTAMP_DT'] = pd.to_datetime(history_df['DATA_TIMESTAMP'])
 else:
-    # If history_df is empty from source, create a dummy DataFrame with all expected columns.
-    # This prevents KeyErrors when trying to access columns in filter options or initial chart setups.
     st.error("No data loaded from Snowflake. Please check your connection or data source.")
     history_df = pd.DataFrame(columns=[
         'DATABASE_NAME', 'SCHEMA_NAME', 'TABLE_NAME', 'STATE', 'REFRESH_ACTION', 'DATA_TIMESTAMP',
@@ -40,31 +31,66 @@ with tab1:
     st.header("Overall Dashboard Overview")
 
     if not history_df.empty:
-        st.subheader("Key Refresh Status Summary (All Tables)")
-        state_counts_kpi = history_df['STATE'].value_counts()
-        total_tables_kpi = state_counts_kpi.sum()
+        kpi_header_cols_tab1 = st.columns([0.7, 0.3])
+        with kpi_header_cols_tab1[0]:
+            st.subheader("Key Refresh Status Summary")
+        with kpi_header_cols_tab1[1]:
+            st.write("") # Spacer
+            show_kpi_per_table_tab1 = st.checkbox(
+                "Show KPI per Table (All Data)", value=True, key="kpi_per_table_tab1" # DEFAULTED TO TRUE
+            )
 
-        col_failed_kpi, col_succeeded_kpi, col_executing_kpi = st.columns(3)
+        if show_kpi_per_table_tab1:
+            st.write("Displaying key refresh metrics for each table across all historical data.")
+            # Calculate KPIs per table
+            kpi_per_table_df_tab1 = history_df.groupby('TABLE_NAME').agg(
+                Total_Refreshes=('STATE', 'count'),
+                Succeeded_Count=('STATE', lambda x: (x == 'SUCCEEDED').sum()),
+                Failed_Count=('STATE', lambda x: (x.isin(['FAILED', 'UPSTREAM_FAILED'])).sum()),
+                Executing_Count=('STATE', lambda x: (x == 'EXECUTING').sum()),
+                Latest_State=('DATA_TIMESTAMP_DT', lambda x: history_df.loc[x.idxmax(), 'STATE']) # Get latest state
+            ).reset_index()
 
-        # Using st.markdown with unsafe_allow_html for custom styling of metrics
-        with col_failed_kpi:
-            failed_count_kpi = state_counts_kpi.get("FAILED", 0) + state_counts_kpi.get("UPSTREAM_FAILED", 0)
-            st.markdown(f"<p style='font-size:14px; color:red; margin-bottom:0;'>Total Failed/Upstream Failed</p>", unsafe_allow_html=True)
-            st.markdown(f"<h3 style='margin-top:0;'>{failed_count_kpi} tables</h3>", unsafe_allow_html=True)
-            if total_tables_kpi > 0:
-                st.markdown(f"<p style='font-size:12px; color:red;'>{failed_count_kpi/total_tables_kpi:.1%}</p>", unsafe_allow_html=True)
+            kpi_per_table_df_tab1['Success_Rate'] = (
+                kpi_per_table_df_tab1['Succeeded_Count'] / kpi_per_table_df_tab1['Total_Refreshes']
+            ).fillna(0).apply(lambda x: f"{x:.1%}")
 
-        with col_succeeded_kpi:
-            succeeded_count_kpi = state_counts_kpi.get("SUCCEEDED", 0)
-            st.markdown(f"<p style='font-size:14px; color:green; margin-bottom:0;'>Succeeded</p>", unsafe_allow_html=True)
-            st.markdown(f"<h3 style='margin-top:0;'>{succeeded_count_kpi} tables</h3>", unsafe_allow_html=True)
-            if total_tables_kpi > 0:
-                st.markdown(f"<p style='font-size:12px; color:green;'>{succeeded_count_kpi/total_tables_kpi:.1%}</p>", unsafe_allow_html=True)
+            kpi_per_table_df_tab1['Fail_Rate'] = (
+                kpi_per_table_df_tab1['Failed_Count'] / kpi_per_table_df_tab1['Total_Refreshes']
+            ).fillna(0).apply(lambda x: f"{x:.1%}")
 
-        with col_executing_kpi:
-            executing_count_kpi = state_counts_kpi.get("EXECUTING", 0)
-            st.markdown(f"<p style='font-size:14px; color:purple; margin-bottom:0;'>Executing</p>", unsafe_allow_html=True)
-            st.markdown(f"<h3 style='margin-top:0;'>{executing_count_kpi} tables</h3>", unsafe_allow_html=True)
+            # Sort by tables with most failures first
+            kpi_per_table_df_tab1 = kpi_per_table_df_tab1.sort_values(
+                ['Failed_Count', 'Total_Refreshes'], ascending=[False, False]
+            )
+
+            st.dataframe(kpi_per_table_df_tab1, use_container_width=True)
+
+        else: # Current behavior: Aggregate KPIs
+            st.write("Displaying aggregate key refresh metrics for all tables across all historical data.")
+            state_counts_kpi = history_df['STATE'].value_counts()
+            total_tables_kpi = state_counts_kpi.sum()
+
+            col_failed_kpi, col_succeeded_kpi, col_executing_kpi = st.columns(3)
+
+            with col_failed_kpi:
+                failed_count_kpi = state_counts_kpi.get("FAILED", 0) + state_counts_kpi.get("UPSTREAM_FAILED", 0)
+                st.markdown(f"<p style='font-size:14px; color:red; margin-bottom:0;'>Total Failed/Upstream Failed</p>", unsafe_allow_html=True)
+                st.markdown(f"<h3 style='margin-top:0;'>{failed_count_kpi} tables</h3>", unsafe_allow_html=True)
+                if total_tables_kpi > 0:
+                    st.markdown(f"<p style='font-size:12px; color:red;'>{failed_count_kpi/total_tables_kpi:.1%}</p>", unsafe_allow_html=True)
+
+            with col_succeeded_kpi:
+                succeeded_count_kpi = state_counts_kpi.get("SUCCEEDED", 0)
+                st.markdown(f"<p style='font-size:14px; color:green; margin-bottom:0;'>Succeeded</p>", unsafe_allow_html=True)
+                st.markdown(f"<h3 style='margin-top:0;'>{succeeded_count_kpi} tables</h3>", unsafe_allow_html=True)
+                if total_tables_kpi > 0:
+                    st.markdown(f"<p style='font-size:12px; color:green;'>{succeeded_count_kpi/total_tables_kpi:.1%}</p>", unsafe_allow_html=True)
+
+            with col_executing_kpi:
+                executing_count_kpi = state_counts_kpi.get("EXECUTING", 0)
+                st.markdown(f"<p style='font-size:14px; color:purple; margin-bottom:0;'>Executing</p>", unsafe_allow_html=True)
+                st.markdown(f"<h3 style='margin-top:0;'>{executing_count_kpi} tables</h3>", unsafe_allow_html=True)
 
         st.divider()
 
@@ -89,22 +115,20 @@ with tab_dt_state:
 
     if history_df.empty:
         st.warning("No data loaded from Snowflake. Please ensure data is available.", icon="⚠️")
-        st.stop() # Exit early if no data at all
+        st.stop()
 
     st.markdown("---")
     st.subheader("Filter Refresh History")
 
-    # Filter Controls Layout
-    filter_row1_cols = st.columns([1, 1, 1, 1]) # Database, Schema, Table(s), State(s)
-    filter_row2_cols = st.columns([0.5, 1.5]) # Date controls (checkbox, date input)
-    filter_row3_cols = st.columns([1]) # Problematic tables checkbox
+    filter_row1_cols = st.columns([1, 1, 1, 1])
+    filter_row2_cols = st.columns([0.5, 1.5])
+    filter_row3_cols = st.columns([1])
 
     with filter_row1_cols[0]:
         all_databases = ['All'] + sorted(history_df['DATABASE_NAME'].unique().tolist())
         selected_database = st.selectbox(
             "Database:", options=all_databases, key="db_filter_dt"
         )
-
     with filter_row1_cols[1]:
         if selected_database != 'All':
             current_db_schemas = history_df[history_df['DATABASE_NAME'] == selected_database]['SCHEMA_NAME'].unique().tolist()
@@ -115,13 +139,13 @@ with tab_dt_state:
             "Schema:", options=schemas_in_db, key="schema_filter_dt"
         )
 
-    with filter_row1_cols[2]:
-        filtered_df_for_table_select_options_dt = history_df.copy()
-        if selected_database != 'All':
-            filtered_df_for_table_select_options_dt = filtered_df_for_table_select_options_dt[filtered_df_for_table_select_options_dt['DATABASE_NAME'] == selected_database]
-        if selected_schema != 'All':
-            filtered_df_for_table_select_options_dt = filtered_df_for_table_select_options_dt[filtered_df_for_table_select_options_dt['SCHEMA_NAME'] == selected_schema]
+    filtered_df_for_table_select_options_dt = history_df.copy()
+    if selected_database != 'All':
+        filtered_df_for_table_select_options_dt = filtered_df_for_table_select_options_dt[filtered_df_for_table_select_options_dt['DATABASE_NAME'] == selected_database]
+    if selected_schema != 'All':
+        filtered_df_for_table_select_options_dt = filtered_df_for_table_select_options_dt[filtered_df_for_table_select_options_dt['SCHEMA_NAME'] == selected_schema]
 
+    with filter_row1_cols[2]:
         if not filtered_df_for_table_select_options_dt.empty:
             all_tables_dt_options = ['All'] + sorted(filtered_df_for_table_select_options_dt['TABLE_NAME'].unique().tolist())
             default_tables_selected_dt = ['All']
@@ -139,9 +163,8 @@ with tab_dt_state:
             "State(s):", options=all_states, default=all_states, key="state_multi_select_dt"
         )
 
-    # Date filter controls
     with filter_row2_cols[0]:
-        st.write("") # Spacer
+        st.write("")
         use_current_day_dt = st.checkbox("Show Current Day Only", key="current_day_checkbox_dt")
 
     with filter_row2_cols[1]:
@@ -160,7 +183,6 @@ with tab_dt_state:
                 date_range_default_value_dt = (max_data_date_dt, max_data_date_dt)
             date_input_disabled_dt = True
 
-        # FIXED: max_value as named argument and consistent variable name
         selected_date_range_dt = st.date_input(
             "Data Timestamp Range:",
             value=date_range_default_value_dt,
@@ -171,7 +193,7 @@ with tab_dt_state:
         )
         
     with filter_row3_cols[0]:
-        st.write("") # Spacer for problem checkbox
+        st.write("")
         show_problem_tables_only = st.checkbox(
             "Show only tables with past FAILED/UPSTREAM_FAILED states", key="problem_tables_checkbox_dt"
         )
@@ -187,21 +209,18 @@ with tab_dt_state:
     if selected_schema != 'All':
         filtered_history_df_dt = filtered_history_df_dt[filtered_history_df_dt['SCHEMA_NAME'] == selected_schema]
 
-    # Table filter
     if selected_table_dt and 'All' not in selected_table_dt:
         filtered_history_df_dt = filtered_history_df_dt[filtered_history_df_dt['TABLE_NAME'].isin(selected_table_dt)]
     elif not selected_table_dt:
         st.warning("No table(s) selected. Display will be empty.", icon="⚠️")
         filtered_history_df_dt = pd.DataFrame()
 
-    # State filter
     if selected_states and 'All' not in selected_states:
         filtered_history_df_dt = filtered_history_df_dt[filtered_history_df_dt['STATE'].isin(selected_states)]
     elif not selected_states:
         st.warning("No state(s) selected. Charts/Table will be empty.", icon="⚠️")
         filtered_history_df_dt = pd.DataFrame()
 
-    # Problem tables filter
     if show_problem_tables_only:
         problem_tables_all_time = history_df[history_df['STATE'].isin(["FAILED", "UPSTREAM_FAILED"])]['TABLE_NAME'].unique()
         if problem_tables_all_time.size > 0:
@@ -213,7 +232,6 @@ with tab_dt_state:
             st.info("No tables with FAILED/UPSTREAM_FAILED history in the original dataset.", icon="ℹ️")
             filtered_history_df_dt = pd.DataFrame()
 
-    # Date range filter
     if len(selected_date_range_dt) == 2:
         start_date_dt = pd.to_datetime(selected_date_range_dt[0])
         end_date_dt = pd.to_datetime(selected_date_range_dt[1]) + pd.Timedelta(days=1)
@@ -224,6 +242,73 @@ with tab_dt_state:
             ]
         if filtered_history_df_dt.empty:
              st.info("No data found for the selected date range after other filters have been applied.", icon="ℹ️")
+
+
+    # --- KPI Summary (DT STATE) ---
+    kpi_summary_header_cols_dt = st.columns([0.7, 0.3])
+    with kpi_summary_header_cols_dt[0]:
+        st.subheader("Key Refresh Status Summary")
+    with kpi_summary_header_cols_dt[1]:
+        st.write("")
+        show_kpi_per_table_dt = st.checkbox(
+            "Show KPI per Table (Filtered Data)", value=True, key="kpi_per_table_dt" # DEFAULTED TO TRUE
+        )
+    
+    if show_kpi_per_table_dt:
+        st.write("Displaying key refresh metrics for each table based on current filters.")
+        if not filtered_history_df_dt.empty:
+            kpi_per_table_df_dt = filtered_history_df_dt.groupby('TABLE_NAME').agg(
+                Total_Refreshes=('STATE', 'count'),
+                Succeeded_Count=('STATE', lambda x: (x == 'SUCCEEDED').sum()),
+                Failed_Count=('STATE', lambda x: (x.isin(['FAILED', 'UPSTREAM_FAILED'])).sum()),
+                Executing_Count=('STATE', lambda x: (x == 'EXECUTING').sum()),
+                Latest_State=('DATA_TIMESTAMP_DT', lambda x: filtered_history_df_dt.loc[x.idxmax(), 'STATE'])
+            ).reset_index()
+
+            kpi_per_table_df_dt['Success_Rate'] = (
+                kpi_per_table_df_dt['Succeeded_Count'] / kpi_per_table_df_dt['Total_Refreshes']
+            ).fillna(0).apply(lambda x: f"{x:.1%}")
+
+            kpi_per_table_df_dt['Fail_Rate'] = (
+                kpi_per_table_df_dt['Failed_Count'] / kpi_per_table_df_dt['Total_Refreshes']
+            ).fillna(0).apply(lambda x: f"{x:.1%}")
+            
+            kpi_per_table_df_dt = kpi_per_table_df_dt.sort_values(
+                ['Failed_Count', 'Total_Refreshes'], ascending=[False, False]
+            )
+
+            st.dataframe(kpi_per_table_df_dt, use_container_width=True)
+        else:
+            st.info("No data available to display KPIs per table based on current filters.", icon="ℹ️")
+    else: # Current behavior: Aggregate KPIs
+        st.write("Displaying aggregate key refresh metrics for all filtered tables.")
+        if not filtered_history_df_dt.empty:
+            state_counts_kpi = filtered_history_df_dt['STATE'].value_counts()
+            total_tables_kpi = state_counts_kpi.sum()
+
+            col_failed_kpi, col_succeeded_kpi, col_executing_kpi = st.columns(3)
+            with col_failed_kpi:
+                failed_count_kpi = state_counts_kpi.get("FAILED", 0) + state_counts_kpi.get("UPSTREAM_FAILED", 0)
+                st.markdown(f"<p style='font-size:14px; color:red; margin-bottom:0;'>Total Failed/Upstream Failed</p>", unsafe_allow_html=True)
+                st.markdown(f"<h3 style='margin-top:0;'>{failed_count_kpi} tables</h3>", unsafe_allow_html=True)
+                if total_tables_kpi > 0:
+                    st.markdown(f"<p style='font-size:12px; color:red;'>{failed_count_kpi/total_tables_kpi:.1%}</p>", unsafe_allow_html=True)
+
+            with col_succeeded_kpi:
+                succeeded_count_kpi = state_counts_kpi.get("SUCCEEDED", 0)
+                st.markdown(f"<p style='font-size:14px; color:green; margin-bottom:0;'>Succeeded</p>", unsafe_allow_html=True)
+                st.markdown(f"<h3 style='margin-top:0;'>{succeeded_count_kpi} tables</h3>", unsafe_allow_html=True)
+                if total_tables_kpi > 0:
+                    st.markdown(f"<p style='font-size:12px; color:green;'>{succeeded_count_kpi/total_tables_kpi:.1%}</p>", unsafe_allow_html=True)
+
+            with col_executing_kpi:
+                executing_count_kpi = state_counts_kpi.get("EXECUTING", 0)
+                st.markdown(f"<p style='font-size:14px; color:purple; margin-bottom:0;'>Executing</p>", unsafe_allow_html=True)
+                st.markdown(f"<h3 style='margin-top:0;'>{executing_count_kpi} tables</h3>", unsafe_allow_html=True)
+        else:
+            st.info("No data for KPI summary after filtering.", icon="ℹ️")
+
+    st.divider() # Separator after KPI section
 
 
     # --- Display Filtered Table (DT STATE) ---
@@ -255,15 +340,15 @@ with tab_dt_state:
     else:
         st.info("No data to display in the table based on current filters. Adjust filter selections.", icon="ℹ️")
 
-    st.markdown("---")
+    st.divider()
 
     # --- Chart 1: Stacked Horizontal Bar Chart by TABLE_NAME (DT STATE) ---
     st.subheader("Historical State Counts per Table")
     st.write("This chart shows the historical count of each state for individual tables, based on applied filters.")
 
-    chart_header_cols_dt_chart1 = st.columns([0.7, 0.3]) # Layout for chart subheader and log scale checkbox
+    chart_header_cols_dt_chart1 = st.columns([0.7, 0.3])
     with chart_header_cols_dt_chart1[1]:
-        st.write("") # Spacer
+        st.write("")
         use_log_scale_dt_chart1 = st.checkbox("Use Logarithmic Scale (X-axis)", key="log_scale_checkbox_dt_chart1")
 
     if not filtered_history_df_dt.empty:
@@ -298,15 +383,15 @@ with tab_dt_state:
         else: st.info("No data for cumulative state counts chart after filtering.", icon="ℹ️")
     else: st.info("No data available for cumulative state counts chart after filters.", icon="ℹ️")
 
-    st.markdown("---")
+    st.divider()
 
     # --- Overall Distribution of Dynamic Table States (Chart 2) ---
     st.subheader("Overall Distribution of Dynamic Table States")
     st.write("This chart shows the total count for each state across all tables, based on applied filters.")
 
-    chart_header_cols_dt_chart2 = st.columns([0.7, 0.3]) # Layout for chart subheader and log scale checkbox
+    chart_header_cols_dt_chart2 = st.columns([0.7, 0.3])
     with chart_header_cols_dt_chart2[1]:
-        st.write("") # Spacer
+        st.write("")
         use_log_scale_dt_chart2 = st.checkbox("Use Logarithmic Scale (X-axis)", key="log_scale_checkbox_dt_chart2")
 
     if not filtered_history_df_dt.empty:
@@ -328,37 +413,6 @@ with tab_dt_state:
         
         st.plotly_chart(fig_bar_states, use_container_width=True)
     else: st.info("No data to display overall state distribution after filtering.", icon="ℹ️")
-
-    st.markdown("---")
-
-    # --- KPI Summary (DT STATE) ---
-    st.subheader("Key Refresh Status Summary (for quick glance)")
-    st.write("Summary of key metrics for the currently filtered data.")
-
-    if not filtered_history_df_dt.empty:
-        state_counts_kpi = filtered_history_df_dt['STATE'].value_counts()
-        total_tables_kpi = state_counts_kpi.sum()
-
-        col_failed_kpi, col_succeeded_kpi, col_executing_kpi = st.columns(3)
-        with col_failed_kpi:
-            failed_count_kpi = state_counts_kpi.get("FAILED", 0) + state_counts_kpi.get("UPSTREAM_FAILED", 0)
-            st.markdown(f"<p style='font-size:14px; color:red; margin-bottom:0;'>Total Failed/Upstream Failed</p>", unsafe_allow_html=True)
-            st.markdown(f"<h3 style='margin-top:0;'>{failed_count_kpi} tables</h3>", unsafe_allow_html=True)
-            if total_tables_kpi > 0:
-                st.markdown(f"<p style='font-size:12px; color:red;'>{failed_count_kpi/total_tables_kpi:.1%}</p>", unsafe_allow_html=True)
-
-        with col_succeeded_kpi:
-            succeeded_count_kpi = state_counts_kpi.get("SUCCEEDED", 0)
-            st.markdown(f"<p style='font-size:14px; color:green; margin-bottom:0;'>Succeeded</p>", unsafe_allow_html=True)
-            st.markdown(f"<h3 style='margin-top:0;'>{succeeded_count_kpi} tables</h3>", unsafe_allow_html=True)
-            if total_tables_kpi > 0:
-                st.markdown(f"<p style='font-size:12px; color:green;'>{succeeded_count_kpi/total_tables_kpi:.1%}</p>", unsafe_allow_html=True)
-
-        with col_executing_kpi:
-            executing_count_kpi = state_counts_kpi.get("EXECUTING", 0)
-            st.markdown(f"<p style='font-size:14px; color:purple; margin-bottom:0;'>Executing</p>", unsafe_allow_html=True)
-            st.markdown(f"<h3 style='margin-top:0;'>{executing_count_kpi} tables</h3>", unsafe_allow_html=True)
-    else: st.info("No data for KPI summary after filtering.", icon="ℹ️")
 
 
 # --- Tab "REFRESH_STATS" ---
@@ -460,11 +514,10 @@ with tab_refresh_stats:
             else:
                 date_range_default_value_stats = (today, today)
                 date_input_disabled_stats = True
-        # FIXED: max_value as named argument and consistent variable name
         selected_date_range_stats = st.date_input(
             "Data Timestamp Range:",
             value=date_range_default_value_stats,
-            min_value=min_data_date_stats, max_value=max_data_date_stats, # FIXED: max_value as named arg
+            min_value=min_data_date_stats, max_value=max_data_date_stats,
             key="date_range_filter_stats", disabled=date_input_disabled_stats
         )
 
@@ -483,7 +536,7 @@ with tab_refresh_stats:
         use_log_scale_stats = st.checkbox("Use Logarithmic Scale (X-axis)", key="log_scale_checkbox_stats")
 
 
-    st.markdown("---") # Visual separator
+    st.markdown("---")
 
 
     # --- Apply all filters to the base DataFrame for REFRESH_STATS ---
@@ -630,7 +683,7 @@ with tab_refresh_stats:
 
     chart_header_cols_stats_chart2 = st.columns([0.7, 0.3]) # Layout for chart subheader and log scale checkbox
     with chart_header_cols_stats_chart2[1]:
-        st.write("") # Spacer
+        st.write("")
         use_log_scale_chart2 = st.checkbox("Use Logarithmic Scale (X-axis) Chart 2", key="log_scale_checkbox_stats_chart2")
 
     if not filtered_stats_df.empty and actual_selected_stats_for_plot:
