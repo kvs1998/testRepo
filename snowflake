@@ -1,5 +1,5 @@
 -- Main Driver Stored Procedure - Orchestrates collection for all tracked tables
--- UPDATED with correct Snowflake cursor loop syntax
+-- UPDATED with CORRECTED dynamic SQL call syntax
 -- Replace YOUR_DB and YOUR_SCHEMA.
 
 CREATE OR REPLACE PROCEDURE YOUR_DB.YOUR_SCHEMA.SP_DRIVE_ALL_DT_COLLECTION()
@@ -16,10 +16,10 @@ DECLARE
     
     -- --- Internal Variables ---
     lv_message VARCHAR DEFAULT '';
-    lv_record_count INTEGER DEFAULT 0; -- Will count total tables defined in cursor
-    lv_processed_count INTEGER DEFAULT 0; -- Will count tables where processing attempt was made
-    lv_success_count INTEGER DEFAULT 0; -- Will count tables that went through with no error
-    lv_fail_count INTEGER DEFAULT 0; -- Will count tables that encountered an exception
+    lv_record_count INTEGER DEFAULT 0;
+    lv_processed_count INTEGER DEFAULT 0;
+    lv_success_count INTEGER DEFAULT 0;
+    lv_fail_count INTEGER DEFAULT 0;
     lv_db_name VARCHAR;
     lv_schema_name VARCHAR;
     lv_table_name VARCHAR;
@@ -31,7 +31,7 @@ DECLARE
     lv_metadata_days NUMBER;
     lv_call_result VARCHAR;
 
-    -- Cursor definition (no OPEN/CLOSE needed with FOR loop)
+    -- Cursor definition
     c_tables CURSOR FOR
         SELECT 
             DATABASE_NAME, SCHEMA_NAME, TABLE_NAME, QUALIFIED_NAME,
@@ -45,7 +45,7 @@ BEGIN
     
     -- Correct Snowflake FOR loop for cursor iteration
     FOR record_row IN c_tables DO
-        lv_record_count := lv_record_count + 1; -- Count tables defined in tracking
+        lv_record_count := lv_record_count + 1;
 
         -- Assign cursor row values to local variables for clarity
         lv_db_name := record_row.DATABASE_NAME;
@@ -59,14 +59,15 @@ BEGIN
         lv_metadata_days := record_row.COLLECT_METADATA_DAYS;
 
         BEGIN -- Inner BEGIN/END block for per-table error handling
-            lv_processed_count := lv_processed_count + 1; -- Count tables where processing attempt is made
+            lv_processed_count := lv_processed_count + 1;
             lv_message := lv_message || '  Processing table: ' || lv_qualified_name || '\n';
 
             -- Call SP_COLLECT_DT_REFRESH_HISTORY (for detailed event history)
             IF (lv_track_refresh_history) THEN
                 lv_call_result := '';
+                -- FIXED: Use '?' placeholders in the string and pass variables in USING
                 EXECUTE IMMEDIATE 'CALL ' || :LV_REFRESH_HISTORY_PROC_FQDN || '(?, ?, ?, ?)'
-                USING (:lv_db_name, :lv_schema_name, :lv_table_name, :lv_refresh_history_days);
+                USING lv_db_name, lv_schema_name, lv_table_name, lv_refresh_history_days;
                 
                 SELECT RESULT FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) INTO lv_call_result;
 
@@ -95,8 +96,9 @@ BEGIN
             -- Call SP_COLLECT_DYNAMIC_TABLE_METADATA (for current metadata snapshot)
             IF (lv_track_metadata_snapshot) THEN
                 lv_call_result := '';
+                -- FIXED: Use '?' placeholders in the string and pass variables in USING
                 EXECUTE IMMEDIATE 'CALL ' || :LV_METADATA_PROC_FQDN || '(?, ?, ?)'
-                USING (:lv_db_name, :lv_schema_name, :lv_table_name);
+                USING lv_db_name, lv_schema_name, lv_table_name;
 
                 SELECT RESULT FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) INTO lv_call_result;
 
