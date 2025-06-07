@@ -1,35 +1,150 @@
-CREATE TABLE YOUR_DB.YOUR_SCHEMA.T_DYNAMIC_TABLE_TRACKING (
-    ID NUMBER AUTOINCREMENT, -- Incremental ID for tracking record
-    DATABASE_NAME TEXT NOT NULL,
-    SCHEMA_NAME TEXT NOT NULL,
-    TABLE_NAME TEXT NOT NULL,
-    QUALIFIED_NAME TEXT AS (DATABASE_NAME || '.' || SCHEMA_NAME || '.' || TABLE_NAME) UNIQUE, -- Auto-generate and ensure uniqueness
+-- Main Driver Stored Procedure - Orchestrates collection for all tracked tables
+-- UPDATED with correct Snowflake cursor loop syntax
+-- Replace YOUR_DB and YOUR_SCHEMA.
+
+CREATE OR REPLACE PROCEDURE YOUR_DB.YOUR_SCHEMA.SP_DRIVE_ALL_DT_COLLECTION()
+RETURNS VARCHAR
+LANGUAGE SQL
+EXECUTE AS CALLER
+AS
+$$
+DECLARE
+    -- --- Configuration Variables (Define paths here) ---
+    LV_TRACKING_TABLE_FQDN VARCHAR := 'YOUR_DB.YOUR_SCHEMA.T_DYNAMIC_TABLE_TRACKING';
+    LV_REFRESH_HISTORY_PROC_FQDN VARCHAR := 'YOUR_DB.YOUR_SCHEMA.SP_COLLECT_DT_REFRESH_HISTORY';
+    LV_METADATA_PROC_FQDN VARCHAR := 'YOUR_DB.YOUR_SCHEMA.SP_COLLECT_DYNAMIC_TABLE_METADATA';
     
-    -- Tracking Flags for specific data types
-    TRACK_REFRESH_HISTORY BOOLEAN DEFAULT TRUE, -- Collects from DYNAMIC_TABLE_REFRESH_HISTORY
-    TRACK_METADATA_SNAPSHOT BOOLEAN DEFAULT FALSE, -- Collects from DYNAMIC_TABLES (current state)
-    TRACK_GRAPH_HISTORY BOOLEAN DEFAULT FALSE, -- Placeholder if you later want to collect from DYNAMIC_TABLE_GRAPH_HISTORY
+    -- --- Internal Variables ---
+    lv_message VARCHAR DEFAULT '';
+    lv_record_count INTEGER DEFAULT 0; -- Will count total tables defined in cursor
+    lv_processed_count INTEGER DEFAULT 0; -- Will count tables where processing attempt was made
+    lv_success_count INTEGER DEFAULT 0; -- Will count tables that went through with no error
+    lv_fail_count INTEGER DEFAULT 0; -- Will count tables that encountered an exception
+    lv_db_name VARCHAR;
+    lv_schema_name VARCHAR;
+    lv_table_name VARCHAR;
+    lv_qualified_name VARCHAR;
+    lv_track_refresh_history BOOLEAN;
+    lv_track_metadata_snapshot BOOLEAN;
+    lv_track_graph_history BOOLEAN;
+    lv_refresh_history_days NUMBER;
+    lv_metadata_days NUMBER;
+    lv_call_result VARCHAR;
+
+    -- Cursor definition (no OPEN/CLOSE needed with FOR loop)
+    c_tables CURSOR FOR
+        SELECT 
+            DATABASE_NAME, SCHEMA_NAME, TABLE_NAME, QUALIFIED_NAME,
+            TRACK_REFRESH_HISTORY, TRACK_METADATA_SNAPSHOT, TRACK_GRAPH_HISTORY,
+            COLLECT_REFRESH_HISTORY_DAYS, COLLECT_METADATA_DAYS
+        FROM IDENTIFIER(:LV_TRACKING_TABLE_FQDN)
+        WHERE IS_ACTIVE = TRUE;
+
+BEGIN
+    lv_message := lv_message || 'Starting DYNAMIC TABLE COLLECTION DRIVER at ' || CURRENT_TIMESTAMP() || '\n';
     
-    IS_ACTIVE BOOLEAN DEFAULT TRUE, -- Set to FALSE to disable tracking for a table
+    -- Correct Snowflake FOR loop for cursor iteration
+    FOR record_row IN c_tables DO
+        lv_record_count := lv_record_count + 1; -- Count tables defined in tracking
 
-    -- Collection Parameters for DYNAMIC_TABLE_REFRESH_HISTORY
-    COLLECT_REFRESH_HISTORY_DAYS NUMBER DEFAULT 7, -- P_COLLECT_FROM_LAST_DAYS for refresh history
+        -- Assign cursor row values to local variables for clarity
+        lv_db_name := record_row.DATABASE_NAME;
+        lv_schema_name := record_row.SCHEMA_NAME;
+        lv_table_name := record_row.TABLE_NAME;
+        lv_qualified_name := record_row.QUALIFIED_NAME;
+        lv_track_refresh_history := record_row.TRACK_REFRESH_HISTORY;
+        lv_track_metadata_snapshot := record_row.TRACK_METADATA_SNAPSHOT;
+        lv_track_graph_history := record_row.TRACK_GRAPH_HISTORY;
+        lv_refresh_history_days := record_row.COLLECT_REFRESH_HISTORY_DAYS;
+        lv_metadata_days := record_row.COLLECT_METADATA_DAYS;
 
-    -- Collection Parameters for DYNAMIC_TABLES (Metadata Snapshot)
-    -- This collection currently has no explicit date range, so 'DAYS' here is more conceptual for logging.
-    -- DYNAMIC_TABLES by default shows within 7 days, if not specified.
-    COLLECT_METADATA_DAYS NUMBER DEFAULT 7, 
+        BEGIN -- Inner BEGIN/END block for per-table error handling
+            lv_processed_count := lv_processed_count + 1; -- Count tables where processing attempt is made
+            lv_message := lv_message || '  Processing table: ' || lv_qualified_name || '\n';
 
-    -- Audit and Status for REFRESH_HISTORY collection
-    LAST_REFRESH_HISTORY_COLLECTION_TIMESTAMP TIMESTAMP_NTZ,
-    LAST_REFRESH_HISTORY_COLLECTION_STATUS TEXT, -- SUCCESS / FAILED
-    LAST_REFRESH_HISTORY_COLLECTION_MESSAGE TEXT,
+            -- Call SP_COLLECT_DT_REFRESH_HISTORY (for detailed event history)
+            IF (lv_track_refresh_history) THEN
+                lv_call_result := '';
+                EXECUTE IMMEDIATE 'CALL ' || :LV_REFRESH_HISTORY_PROC_FQDN || '(?, ?, ?, ?)'
+                USING (:lv_db_name, :lv_schema_name, :lv_table_name, :lv_refresh_history_days);
+                
+                SELECT RESULT FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) INTO lv_call_result;
 
-    -- Audit and Status for METADATA_SNAPSHOT collection
-    LAST_METADATA_COLLECTION_TIMESTAMP TIMESTAMP_NTZ,
-    LAST_METADATA_COLLECTION_STATUS TEXT,
-    LAST_METADATA_COLLECTION_MESSAGE TEXT,
+                IF (STARTSWITH(lv_call_result, 'ERROR')) THEN
+                    lv_message := lv_message || '    Refresh History FAILED: ' || lv_call_result || '\n';
+                    UPDATE IDENTIFIER(:LV_TRACKING_TABLE_FQDN)
+                    SET 
+                        LAST_REFRESH_HISTORY_COLLECTION_TIMESTAMP = CURRENT_TIMESTAMP()::TIMESTAMP_NTZ,
+                        LAST_REFRESH_HISTORY_COLLECTION_STATUS = 'FAILED',
+                        LAST_REFRESH_HISTORY_COLLECTION_MESSAGE = :lv_call_result,
+                        UPDATED_AT = CURRENT_TIMESTAMP()::TIMESTAMP_NTZ
+                    WHERE QUALIFIED_NAME = :lv_qualified_name;
+                    lv_fail_count := lv_fail_count + 1;
+                ELSE
+                    lv_message := lv_message || '    Refresh History SUCCESS: ' || lv_call_result || '\n';
+                    UPDATE IDENTIFIER(:LV_TRACKING_TABLE_FQDN)
+                    SET 
+                        LAST_REFRESH_HISTORY_COLLECTION_TIMESTAMP = CURRENT_TIMESTAMP()::TIMESTAMP_NTZ,
+                        LAST_REFRESH_HISTORY_COLLECTION_STATUS = 'SUCCESS',
+                        LAST_REFRESH_HISTORY_COLLECTION_MESSAGE = :lv_call_result,
+                        UPDATED_AT = CURRENT_TIMESTAMP()::TIMESTAMP_NTZ
+                    WHERE QUALIFIED_NAME = :lv_qualified_name;
+                END IF;
+            END IF;
 
-    CREATED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
-    UPDATED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
-);
+            -- Call SP_COLLECT_DYNAMIC_TABLE_METADATA (for current metadata snapshot)
+            IF (lv_track_metadata_snapshot) THEN
+                lv_call_result := '';
+                EXECUTE IMMEDIATE 'CALL ' || :LV_METADATA_PROC_FQDN || '(?, ?, ?)'
+                USING (:lv_db_name, :lv_schema_name, :lv_table_name);
+
+                SELECT RESULT FROM TABLE(RESULT_SCAN(LAST_QUERY_ID())) INTO lv_call_result;
+
+                IF (STARTSWITH(lv_call_result, 'ERROR')) THEN
+                    lv_message := lv_message || '    Metadata Snapshot FAILED: ' || lv_call_result || '\n';
+                    UPDATE IDENTIFIER(:LV_TRACKING_TABLE_FQDN)
+                    SET 
+                        LAST_METADATA_COLLECTION_TIMESTAMP = CURRENT_TIMESTAMP()::TIMESTAMP_NTZ,
+                        LAST_METADATA_COLLECTION_STATUS = 'FAILED',
+                        LAST_METADATA_COLLECTION_MESSAGE = :lv_call_result,
+                        UPDATED_AT = CURRENT_TIMESTAMP()::TIMESTAMP_NTZ
+                    WHERE QUALIFIED_NAME = :lv_qualified_name;
+                    lv_fail_count := lv_fail_count + 1;
+                ELSE
+                    lv_message := lv_message || '    Metadata Snapshot SUCCESS: ' || lv_call_result || '\n';
+                    UPDATE IDENTIFIER(:LV_TRACKING_TABLE_FQDN)
+                    SET 
+                        LAST_METADATA_COLLECTION_TIMESTAMP = CURRENT_TIMESTAMP()::TIMESTAMP_NTZ,
+                        LAST_METADATA_COLLECTION_STATUS = 'SUCCESS',
+                        LAST_METADATA_COLLECTION_MESSAGE = :lv_call_result,
+                        UPDATED_AT = CURRENT_TIMESTAMP()::TIMESTAMP_NTZ
+                    WHERE QUALIFIED_NAME = :lv_qualified_name;
+                END IF;
+            END IF;
+
+            -- Add logic for TRACK_GRAPH_HISTORY if you implement that procedure later
+            -- IF (lv_track_graph_history) THEN
+            --    EXECUTE IMMEDIATE 'CALL ' || :LV_GRAPH_HISTORY_PROC_FQDN || '(?, ?)';
+            --    ...
+            -- END IF;
+
+            lv_success_count := lv_success_count + 1;
+
+        EXCEPTION
+            WHEN OTHER THEN
+                lv_fail_count := lv_fail_count + 1;
+                lv_error_message := 'UNEXPECTED ERROR processing ' || lv_qualified_name || ': ' || SQLERRM();
+                lv_message := lv_message || '    ' || lv_error_message || '\n';
+        END; -- End inner BEGIN/END block
+    END FOR; -- End of FOR loop for cursor iteration
+
+    lv_message := lv_message || 'DYNAMIC TABLE COLLECTION DRIVER finished at ' || CURRENT_TIMESTAMP() || '\n';
+    lv_message := lv_message || 'Total tables found: ' || lv_record_count || ', Processed attempts: ' || lv_processed_count || ', Overall Success: ' || lv_success_count || ', Overall Failed: ' || lv_fail_count || '\n';
+    RETURN lv_message;
+
+EXCEPTION
+    WHEN OTHER THEN
+        lv_error_message := 'Major Error in DYNAMIC TABLE COLLECTION DRIVER: ' || SQLERRM();
+        RETURN lv_error_message;
+END;
+$$;
