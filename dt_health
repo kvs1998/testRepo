@@ -27,7 +27,8 @@ def format_seconds_to_readable(seconds_series, format_type):
             if days > 0: parts.append(f"{days}d")
             if hours > 0: parts.append(f"{hours}h")
             if minutes > 0: parts.append(f"{minutes}m")
-            if seconds > 0 and (not parts or seconds >= 1): # Only show seconds if other units are 0 or if >= 1s
+            # Only show seconds if less than a minute or if it's the only unit
+            if seconds > 0 and (days == 0 and hours == 0 and minutes == 0 or seconds >= 1): 
                 parts.append(f"{seconds:.1f}s")
             
             return " ".join(parts) if parts else "0s"
@@ -55,34 +56,25 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
             "Database:", options=all_databases_dt_health, key="db_filter_dt_health"
         )
     with filter_cols_dt_health_row1[1]:
-        # Generate schema options based on the selected database
-        temp_df_for_schema_options = metadata_df.copy()
         if selected_database_dt_health != 'All':
-            temp_df_for_schema_options = temp_df_for_schema_options[temp_df_for_schema_options['DATABASE_NAME'] == selected_database_dt_health]
-
-        if not temp_df_for_schema_options.empty:
-            schemas_in_db_dt_health = ['All'] + sorted(temp_df_for_schema_options['SCHEMA_NAME'].unique().tolist())
+            current_db_schemas_dt_health = metadata_df[metadata_df['DATABASE_NAME'] == selected_database_dt_health]['SCHEMA_NAME'].unique().tolist()
+            schemas_in_db_dt_health = ['All'] + sorted(current_db_schemas_dt_health)
         else:
-            schemas_in_db_dt_health = ['All']
-            st.info("No schemas found for selected Database.", icon="ℹ️")
-
-
+            schemas_in_db_dt_health = ['All'] + sorted(metadata_df['SCHEMA_NAME'].unique().tolist())
         selected_schema_dt_health = st.selectbox(
             "Schema:", options=schemas_in_db_dt_health, key="schema_filter_dt_health"
         )
     
-    # --- Corrected logic for preparing options for table multiselect ---
-    # This DataFrame `df_for_table_options` will be built from scratch based on current DB/Schema selections.
-    df_for_table_options = metadata_df.copy()
+    # Filter options for table multiselect
+    filtered_df_for_table_options_dt_health = metadata_df.copy()
     if selected_database_dt_health != 'All':
-        df_for_table_options = df_for_table_options[df_for_table_options['DATABASE_NAME'] == selected_database_dt_health]
-    if selected_schema_dt_health != 'All':
-        df_for_table_options = df_for_table_options[df_for_table_options['SCHEMA_NAME'] == selected_schema_dt_health]
-
+        filtered_df_for_table_options_dt_health = filtered_df_for_table_options_dt_health[filtered_df_for_table_options_dt_health['DATABASE_NAME'] == selected_database_dt_health]
+    if selected_schema_dt_health != 'All': # FIXED: Corrected variable name from previous response
+        filtered_df_for_table_options_dt_health = filtered_df_for_table_options_dt_health[filtered_df_for_table_options_dt_health['SCHEMA_NAME'] == selected_schema_dt_health]
 
     with filter_cols_dt_health_row1[2]:
-        if not df_for_table_options.empty:
-            all_tables_dt_health_options = ['All'] + sorted(df_for_table_options['TABLE_NAME'].unique().tolist())
+        if not filtered_df_for_table_select_options_dt_health.empty:
+            all_tables_dt_health_options = ['All'] + sorted(filtered_df_for_table_select_options_dt_health['TABLE_NAME'].unique().tolist())
             default_tables_dt_health_selected = ['All']
         else:
             all_tables_dt_health_options = ['All']
@@ -100,7 +92,7 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
     st.markdown("---")
 
 
-    # --- Apply Filters to Main DataFrame ---
+    # --- Apply Filters ---
     filtered_metadata_df = metadata_df.copy()
 
     if selected_database_dt_health != 'All':
@@ -125,7 +117,7 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
 
 
     # --- KPIs and Primary Charts Section ---
-    main_display_cols = st.columns([0.4, 0.6])
+    main_display_cols = st.columns([0.4, 0.6]) # Left for KPIs, Right for Scheduling/Lag Type Charts
 
     with main_display_cols[0]: # Left Column: KPIs
         st.subheader("Current Dynamic Table Health KPIs")
@@ -135,9 +127,8 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
         suspended_dt_count = filtered_metadata_df[filtered_metadata_df['SCHEDULING_STATE_STATUS'] == 'SUSPENDED']['QUALIFIED_NAME'].nunique()
         executing_refresh_dt_count = filtered_metadata_df[filtered_metadata_df['EXECUTING_REFRESH_QUERY_ID'].notna()]['QUALIFIED_NAME'].nunique()
         
-        # Guard against NaN/empty series for mean/max
-        avg_mean_lag = filtered_metadata_df['MEAN_LAG_SEC'].mean() if not filtered_metadata_df['MEAN_LAG_SEC'].empty else np.nan
-        max_lag = filtered_metadata_df['MAXIMUM_LAG_SEC'].max() if not filtered_metadata_df['MAXIMUM_LAG_SEC'].empty else np.nan
+        avg_mean_lag = filtered_metadata_df['MEAN_LAG_SEC'].mean()
+        max_lag = filtered_metadata_df['MAXIMUM_LAG_SEC'].max()
 
         kpi_cols_dt_health_row1 = st.columns(2)
         with kpi_cols_dt_health_row1[0]:
@@ -182,7 +173,6 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
             else:
                 st.info("No scheduling state data.", icon="ℹ️")
 
-
         with chart_rows[1]:
             if not target_lag_type_counts.empty:
                 fig_lag_type = px.pie(target_lag_type_counts,
@@ -198,7 +188,7 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
     st.divider()
 
     # --- New Charts for Detailed Tracking ---
-    st.subheader("Performance & Compliance Insights")
+    st.subheader("Detailed Lag & Performance Tracking")
     
     # Select desired time format for display
     time_format_option = st.radio(
@@ -211,21 +201,32 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
 
     chart_detail_cols = st.columns(2)
 
+
     with chart_detail_cols[0]: # Lag Time Distribution (Histogram)
         st.markdown("<p style='font-size:16px;'><b>Lag Time Distribution (Mean Lag)</b></p>", unsafe_allow_html=True)
         st.write("Distribution of dynamic tables by their mean lag time.")
 
+        # Ensure numeric type and handle NaNs before plotting
         hist_data = filtered_metadata_df['MEAN_LAG_SEC'].dropna()
         if not hist_data.empty:
+            # Create a temporary DataFrame for px.histogram
             hist_df_temp = pd.DataFrame({'MEAN_LAG_SEC': hist_data})
             
             fig_lag_hist = px.histogram(hist_df_temp, 
                                         x="MEAN_LAG_SEC", 
                                         nbins=20, # Number of bins
                                         title='Mean Lag Time Distribution',
-                                        labels={'MEAN_LAG_SEC': 'Mean Lag (seconds)'})
-            fig_lag_hist.update_layout(bargap=0.1)
+                                        labels={'MEAN_LAG_SEC': 'Mean Lag (seconds)'}) # Labels will be updated by format_seconds_to_readable on hover
+            fig_lag_hist.update_layout(bargap=0.1) # Add gap for visual separation
             
+            # Custom hover template to show formatted time
+            # Note: customdata requires data to be explicitly passed
+            fig_lag_hist.update_traces(hovertemplate='Mean Lag: %{x}<br>Count: %{y}<extra></extra>')
+            
+            # Optionally update x-axis ticks based on format_type, though not ideal for continuous histograms
+            # Better to just use the format_seconds_to_readable for tooltips if possible.
+            # Plotly will typically handle numeric bins well.
+
             st.plotly_chart(fig_lag_hist, use_container_width=True)
         else:
             st.info("No mean lag data to display for selected filters.", icon="ℹ️")
@@ -244,7 +245,7 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
                 y='Status',
                 orientation='h',
                 title='Last Completed Refresh Status',
-                color='Status',
+                color='Status', # Color bars by status
                 color_discrete_map={'SUCCEEDED': 'green', 'FAILED': 'red', 'UPSTREAM_FAILED': 'darkred', 'CANCELLED': 'orange'}
             )
             fig_last_refresh_state.update_yaxes(categoryorder="total ascending")
@@ -258,9 +259,11 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
     st.subheader("Target Lag vs. Actual Lag Performance")
     st.write("Compares defined target lag against mean actual lag for each dynamic table.")
 
+    # Filter out NaNs for scatter plot
     scatter_df = filtered_metadata_df.dropna(subset=['TARGET_LAG_SEC', 'MEAN_LAG_SEC']).copy()
 
     if not scatter_df.empty:
+        # Create a temporary column for formatted hover text without modifying original
         scatter_df['Formatted_Mean_Lag'] = format_seconds_to_readable(scatter_df['MEAN_LAG_SEC'], time_format_option)
         scatter_df['Formatted_Target_Lag'] = format_seconds_to_readable(scatter_df['TARGET_LAG_SEC'], time_format_option)
 
@@ -268,34 +271,37 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
             scatter_df,
             x='TARGET_LAG_SEC',
             y='MEAN_LAG_SEC',
-            size='MAXIMUM_LAG_SEC',
-            color='LAST_COMPLETED_REFRESH_STATE',
-            hover_name='QUALIFIED_NAME',
+            size='MAXIMUM_LAG_SEC', # Size by max lag to show severity
+            color='LAST_COMPLETED_REFRESH_STATE', # Color by last refresh status
+            hover_name='QUALIFIED_NAME', # Hover name
             title='Target Lag vs. Mean Lag by Table',
             labels={'TARGET_LAG_SEC': 'Target Lag (s)', 'MEAN_LAG_SEC': 'Mean Lag (s)'},
             color_discrete_map={'SUCCEEDED': 'green', 'FAILED': 'red', 'UPSTREAM_FAILED': 'darkred', 'CANCELLED': 'orange'}
         )
         
+        # Custom hover template to make QUALIFIED_NAME bold and show formatted times
         fig_scatter.update_traces(
             hovertemplate=(
-                '<b>%{hover_name}</b><br>' # Bold QUALIFIED_NAME
-                'Database: %{customdata[3]}<br>' # Add Database name
-                'Schema: %{customdata[4]}<br>'   # Add Schema name
-                'Target Lag: %{customdata[0]}<br>'
-                'Mean Lag: %{customdata[1]}<br>'
-                'Max Lag: %{marker.size}s<br>'
-                'Last Refresh: %{customdata[2]}<br>'
+                '<b>%{hover_name}</b><br><br>'
+                'Target Lag: %{customdata[0]}<br>' # Use customdata for formatted target lag
+                'Mean Lag: %{customdata[1]}<br>'  # Use customdata for formatted mean lag
+                'Max Lag: %{marker.size}s<br>' # Max Lag as original seconds size
+                'Last Refresh: %{customdata[2]}<br>' # Last completed refresh state
                 '<extra></extra>'
             ),
+            # Pass custom data for hover text
             customdata=np.stack((
                 scatter_df['Formatted_Target_Lag'],
                 scatter_df['Formatted_Mean_Lag'],
-                scatter_df['LAST_COMPLETED_REFRESH_STATE'],
-                scatter_df['DATABASE_NAME'], # Add Database name to customdata
-                scatter_df['SCHEMA_NAME']    # Add Schema name to customdata
+                scatter_df['LAST_COMPLETED_REFRESH_STATE']
             ), axis=-1)
         )
         
+        # Adjust axes titles if log scale is not applied to the actual numeric values, 
+        # but the underlying numbers are in seconds.
+        # This will depend on if you allow log scale on these axes, which is common for lag metrics.
+        # For simplicity, keeping raw seconds for axes labels, formatted in hover.
+
         st.plotly_chart(fig_scatter, use_container_width=True)
     else:
         st.info("No data to display Target Lag vs. Actual Lag.", icon="ℹ️")
@@ -309,8 +315,8 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
 
     dt_health_display_columns = [
         'QUALIFIED_NAME', 'SCHEDULING_STATE_STATUS', 'SCHEDULING_STATE_REASON_MESSAGE', 
-        'TARGET_LAG_SEC_FMT', 'MEAN_LAG_SEC_FMT', 'MAXIMUM_LAG_SEC_FMT', # Use formatted columns
-        'TIME_ABOVE_TARGET_LAG_SEC_FMT', 'TIME_WITHIN_TARGET_LAG_RATIO', # Use formatted columns
+        'TARGET_LAG_SEC', 'MEAN_LAG_SEC', 'MAXIMUM_LAG_SEC', 
+        'TIME_ABOVE_TARGET_LAG_SEC', 'TIME_WITHIN_TARGET_LAG_RATIO', 
         'LATEST_DATA_TIMESTAMP', 'LAST_COMPLETED_REFRESH_STATE', 'EXECUTING_REFRESH_QUERY_ID',
         'COLLECTION_TIMESTAMP'
     ]
@@ -319,10 +325,10 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
         'QUALIFIED_NAME': 'Dynamic Table',
         'SCHEDULING_STATE_STATUS': 'Status',
         'SCHEDULING_STATE_REASON_MESSAGE': 'Reason',
-        'TARGET_LAG_SEC_FMT': 'Target Lag',
-        'MEAN_LAG_SEC_FMT': 'Mean Lag',
-        'MAXIMUM_LAG_SEC_FMT': 'Max Lag',
-        'TIME_ABOVE_TARGET_LAG_SEC_FMT': 'Time Above Lag',
+        'TARGET_LAG_SEC': 'Target Lag (s)',
+        'MEAN_LAG_SEC': 'Mean Lag (s)',
+        'MAXIMUM_LAG_SEC': 'Max Lag (s)',
+        'TIME_ABOVE_TARGET_LAG_SEC': 'Time Above Lag (s)',
         'TIME_WITHIN_TARGET_LAG_RATIO': 'Lag Ratio',
         'LATEST_DATA_TIMESTAMP': 'Latest Data Time',
         'LAST_COMPLETED_REFRESH_STATE': 'Last Refresh Status',
@@ -333,18 +339,35 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
     if not filtered_metadata_df.empty:
         df_for_dt_health_table = filtered_metadata_df.copy()
         
-        # Apply formatting to the DataFrame columns for display
+        # Format numerical time columns in the dataframe itself for display
         df_for_dt_health_table['TARGET_LAG_SEC_FMT'] = format_seconds_to_readable(df_for_dt_health_table['TARGET_LAG_SEC'], time_format_option)
         df_for_dt_health_table['MEAN_LAG_SEC_FMT'] = format_seconds_to_readable(df_for_dt_health_table['MEAN_LAG_SEC'], time_format_option)
         df_for_dt_health_table['MAXIMUM_LAG_SEC_FMT'] = format_seconds_to_readable(df_for_dt_health_table['MAXIMUM_LAG_SEC'], time_format_option)
         df_for_dt_health_table['TIME_ABOVE_TARGET_LAG_SEC_FMT'] = format_seconds_to_readable(df_for_dt_health_table['TIME_ABOVE_TARGET_LAG_SEC'], time_format_option)
+
+        # Update display columns and labels to use the formatted ones
+        table_display_cols_formatted = [
+            'QUALIFIED_NAME', 'SCHEDULING_STATE_STATUS', 'SCHEDULING_STATE_REASON_MESSAGE', 
+            'TARGET_LAG_SEC_FMT', 'MEAN_LAG_SEC_FMT', 'MAXIMUM_LAG_SEC_FMT', 
+            'TIME_ABOVE_TARGET_LAG_SEC_FMT', 'TIME_WITHIN_TARGET_LAG_RATIO', 
+            'LATEST_DATA_TIMESTAMP', 'LAST_COMPLETED_REFRESH_STATE', 'EXECUTING_REFRESH_QUERY_ID',
+            'COLLECTION_TIMESTAMP'
+        ]
+        table_display_labels_formatted = dt_health_display_labels.copy()
+        table_display_labels_formatted.update({
+            'TARGET_LAG_SEC_FMT': 'Target Lag',
+            'MEAN_LAG_SEC_FMT': 'Mean Lag',
+            'MAXIMUM_LAG_SEC_FMT': 'Max Lag',
+            'TIME_ABOVE_TARGET_LAG_SEC_FMT': 'Time Above Lag'
+        })
+
 
         df_for_dt_health_table = df_for_dt_health_table.sort_values(
             ['SCHEDULING_STATE_STATUS', 'MEAN_LAG_SEC'], ascending=[False, False]
         )
 
         st.dataframe(
-            df_for_dt_health_table[[col for col in dt_health_display_columns if col in df_for_dt_health_table.columns]].rename(columns=dt_health_display_labels),
+            df_for_dt_health_table[[col for col in table_display_cols_formatted if col in df_for_dt_health_table.columns]].rename(columns=table_display_labels_formatted),
             use_container_width=True
         )
     else:
