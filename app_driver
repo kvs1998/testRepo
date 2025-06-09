@@ -1,0 +1,60 @@
+# app_driver.py
+import streamlit as st
+import pandas as pd
+
+# Import the data fetching module
+import snowflake_data
+
+# Import functions for each tab
+from tabs import overview_tab
+from tabs import dt_state_tab
+from tabs import refresh_stats_tab
+from tabs import dt_health_tab # NEW IMPORT for DT Health tab
+# from tabs import another_tab # For future tabs
+
+st.set_page_config(layout="wide", page_title="Dynamic Table Dashboard", icon="📊")
+st.title("Dynamic Table Refresh Status Dashboard")
+
+# --- Global Data Loading ---
+# Fetch both DataFrames globally. They are cached in snowflake_data.py
+history_df = snowflake_data.get_dt_refresh_history()
+metadata_df = snowflake_data.get_dt_metadata_latest_snapshot() # NEW: Fetch metadata DF
+
+# Initial check for critical data availability
+if history_df.empty and metadata_df.empty:
+    st.error("Dashboard cannot load due to missing or empty data. Please check Snowflake connection and data tables.", icon="❗")
+    st.stop()
+elif history_df.empty:
+    st.warning("Historical refresh data is missing. Some tabs may not display correctly.", icon="⚠️")
+elif metadata_df.empty:
+    st.warning("Dynamic table metadata is missing. The 'DT HEALTH' tab will not display correctly.", icon="⚠️")
+
+
+# --- Tab Definitions ---
+tab_names = ["Overview", "DT STATE", "REFRESH_STATS", "DT HEALTH", "Product Analysis"] # NEW Tab
+tab1, tab_dt_state, tab_refresh_stats, tab_dt_health, tab3 = st.tabs(tab_names)
+
+
+# --- Render Tabs ---
+with tab1:
+    overview_tab.render_overview_tab(history_df) # Overview only needs history_df
+
+with tab_dt_state:
+    dt_state_tab.render_dt_state_tab(history_df) # DT State only needs history_df
+
+with tab_refresh_stats:
+    refresh_stats_tab.render_refresh_stats_tab(history_df) # Refresh Stats only needs history_df
+
+with tab_dt_health: # NEW Tab
+    dt_health_tab.render_dt_health_tab(metadata_df) # DT Health needs metadata_df
+
+with tab3:
+    st.header("Product Performance Analysis (Example Tab)")
+    st.write("This is a placeholder for future content.")
+    # You might want to remove this tab or populate it with relevant data
+    # or even remove its import from app_driver.py if not needed.
+    example_df = pd.DataFrame({
+        "Product": ["A", "B", "C", "D"],
+        "Sales": [100, 150, 80, 200]
+    })
+    st.dataframe(example_df)
