@@ -1,37 +1,117 @@
--- Corrected Initial Population using MERGE INTO
--- Run this ONCE or periodically to synchronize T_DYNAMIC_TABLE_TRACKING.
--- Replace YOUR_DB and YOUR_SCHEMA.
+# snowflake_data.py
+import streamlit as st
+from snowflake.snowpark import Session
+import pandas as pd
+import json
 
-MERGE INTO YOUR_DB.YOUR_SCHEMA.T_DYNAMIC_TABLE_TRACKING AS target_tracking
-USING (
-    SELECT
-        DATABASE_NAME,
-        SCHEMA_NAME,
-        NAME AS TABLE_NAME,
-        DATABASE_NAME || '.' || SCHEMA_NAME || '.' || NAME AS QUALIFIED_NAME -- Generate qualified name here
-    FROM INFORMATION_SCHEMA.DYNAMIC_TABLES(RESULT_LIMIT => 10000) -- Get all dynamic tables
-) AS source_dt
-ON target_tracking.QUALIFIED_NAME = source_dt.QUALIFIED_NAME -- Match on the unique qualified name
+@st.cache_resource
+def get_snowflake_session():
+    """Establishes and caches the Snowflake session."""
+    try:
+        sf_config = st.secrets["snowflake_dev"]
+        session = Session.builder.configs(sf_config).create()
+        return session
+    except Exception as e:
+        st.error(f"Error connecting to Snowflake: {e}. Please check your .streamlit/secrets.toml", icon="🔥")
+        st.stop() # Stop the app if connection fails
 
-WHEN MATCHED THEN -- If a record for this dynamic table already exists
-    UPDATE SET
-        target_tracking.UPDATED_AT = CURRENT_TIMESTAMP() -- Just update the timestamp if it's already tracked
+# Assuming this function queries your T_DYNAMIC_TABLE_REFRESH_HISTORY_FLAT table
+@st.cache_data(ttl=300) # Cache data for 5 minutes
+def get_dt_refresh_history():
+    """
+    Fetches the full refresh history data from the flattened history table.
+    Assumes the table is YOUR_DB.YOUR_SCHEMA.T_DYNAMIC_TABLE_REFRESH_HISTORY_FLAT.
+    """
+    st.info("Fetching dynamic table refresh history data...", icon="⏳")
+    session = get_snowflake_session()
+    try:
+        # IMPORTANT: Replace YOUR_DB.YOUR_SCHEMA.T_DYNAMIC_TABLE_REFRESH_HISTORY_FLAT
+        # with the actual fully qualified name of your history table.
+        hist_df = session.sql(f"""
+            SELECT
+                DATABASE_NAME,
+                SCHEMA_NAME,
+                TABLE_NAME,
+                QUALIFIED_NAME,
+                STATE,
+                STATE_CODE,
+                STATE_MESSAGE,
+                QUERY_ID,
+                DATA_TIMESTAMP,
+                REFRESH_START_TIME,
+                REFRESH_END_TIME,
+                COMPLETION_TARGET,
+                LAST_COMPLETED_DEPENDENCY_QUALIFIED_NAME,
+                LAST_COMPLETED_DEPENDENCY_DATA_TIMESTAMP,
+                NUMINSERTEDROWS,
+                NUMDELETEDROWS,
+                NUMCOPIEDROWS,
+                NUMADDEDPARTITIONS,
+                NUMREMOVEDPARTITIONS,
+                REFRESH_ACTION,
+                REFRESH_TRIGGER,
+                TARGET_LAG_SEC,
+                GRAPH_HISTORY_VALID_FROM
+            FROM YOUR_DB.YOUR_SCHEMA.T_DYNAMIC_TABLE_REFRESH_HISTORY_FLAT
+            ORDER BY DATA_TIMESTAMP DESC
+        """).to_pandas()
+        st.success("Dynamic table refresh history loaded successfully!", icon="✅")
+        
+        if not hist_df.empty:
+            hist_df['REFRESH_ACTION'] = hist_df['REFRESH_ACTION'].fillna('N/A').astype(str)
+            hist_df['DATA_TIMESTAMP_DT'] = pd.to_datetime(hist_df['DATA_TIMESTAMP'])
+        return hist_df
+    except Exception as e:
+        st.error(f"Error fetching data from history table: {e}. Please ensure the table exists and you have access.", icon="❌")
+        return pd.DataFrame()
 
-WHEN NOT MATCHED THEN -- If a record for this dynamic table does NOT exist
-    INSERT (
-        DATABASE_NAME, 
-        SCHEMA_NAME, 
-        TABLE_NAME, 
-        QUALIFIED_NAME,
-        -- Default values will apply for TRACK_REFRESH_HISTORY, IS_ACTIVE, COLLECT_...
-        -- LAST_..._COLLECTION_TIMESTAMP, LAST_..._COLLECTION_STATUS, LAST_..._COLLECTION_MESSAGE
-        -- CREATED_AT (default)
-        UPDATED_AT -- Set explicitly if needed, otherwise default to CURRENT_TIMESTAMP()
-    )
-    VALUES (
-        source_dt.DATABASE_NAME, 
-        source_dt.SCHEMA_NAME, 
-        source_dt.TABLE_NAME, 
-        source_dt.QUALIFIED_NAME,
-        CURRENT_TIMESTAMP() -- Set UPDATED_AT for new inserts
-    );
+@st.cache_data(ttl=60) # Cache metadata for 1 minute (more frequently refreshed)
+def get_dt_metadata_latest_snapshot():
+    """
+    Fetches the latest dynamic table metadata from T_DYNAMIC_TABLE_METADATA_LATEST_SNAPSHOT.
+    """
+    st.info("Fetching dynamic table metadata snapshot...", icon="🔄")
+    session = get_snowflake_session()
+    try:
+        # IMPORTANT: Replace YOUR_DB.YOUR_SCHEMA.T_DYNAMIC_TABLE_METADATA_LATEST_SNAPSHOT
+        # with the actual fully qualified name of your metadata snapshot table.
+        metadata_df = session.sql(f"""
+            SELECT
+                COLLECTION_TIMESTAMP,
+                DATABASE_NAME,
+                SCHEMA_NAME,
+                TABLE_NAME,
+                QUALIFIED_NAME,
+                TARGET_LAG_SEC,
+                TARGET_LAG_TYPE,
+                SCHEDULING_STATE_STATUS,
+                SCHEDULING_STATE_REASON_CODE,
+                SCHEDULING_STATE_REASON_MESSAGE,
+                SCHEDULING_STATE_SUSPENDED_ON,
+                SCHEDULING_STATE_RESUMED_ON,
+                MEAN_LAG_SEC,
+                MAXIMUM_LAG_SEC,
+                TIME_ABOVE_TARGET_LAG_SEC,
+                TIME_WITHIN_TARGET_LAG_RATIO,
+                LATEST_DATA_TIMESTAMP,
+                LAST_COMPLETED_REFRESH_STATE,
+                LAST_COMPLETED_REFRESH_STATE_CODE,
+                LAST_COMPLETED_REFRESH_STATE_MESSAGE,
+                EXECUTING_REFRESH_QUERY_ID
+            FROM YOUR_DB.YOUR_SCHEMA.T_DYNAMIC_TABLE_METADATA_LATEST_SNAPSHOT
+            ORDER BY COLLECTION_TIMESTAMP DESC -- Ensure we get the very latest
+            QUALIFY ROW_NUMBER() OVER (PARTITION BY QUALIFIED_NAME ORDER BY COLLECTION_TIMESTAMP DESC) = 1
+        """).to_pandas()
+        st.success("Dynamic table metadata loaded successfully!", icon="✅")
+
+        # Basic cleaning/type conversion for dashboard use
+        if not metadata_df.empty:
+            # Convert timestamps if necessary
+            for col in ['COLLECTION_TIMESTAMP', 'SCHEDULING_STATE_SUSPENDED_ON', 
+                        'SCHEDULING_STATE_RESUMED_ON', 'LATEST_DATA_TIMESTAMP']:
+                if col in metadata_df.columns:
+                    metadata_df[col] = pd.to_datetime(metadata_df[col], errors='coerce')
+        return metadata_df
+    except Exception as e:
+        st.error(f"Error fetching metadata snapshot data: {e}. Please ensure the table exists and you have access.", icon="❌")
+        return pd.DataFrame()
