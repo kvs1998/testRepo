@@ -24,6 +24,7 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
             "Database:", options=all_databases_dt_health, key="db_filter_dt_health"
         )
     with filter_cols_dt_health[1]:
+        # Corrected: Referencing the already existing filtered_df_for_table_select_options_dt_health
         if selected_database_dt_health != 'All':
             current_db_schemas_dt_health = metadata_df[metadata_df['DATABASE_NAME'] == selected_database_dt_health]['SCHEMA_NAME'].unique().tolist()
             schemas_in_db_dt_health = ['All'] + sorted(current_db_schemas_dt_health)
@@ -32,15 +33,19 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
         selected_schema_dt_health = st.selectbox(
             "Schema:", options=schemas_in_db_dt_health, key="schema_filter_dt_health"
         )
-    with filter_cols_dt_health[2]:
-        filtered_df_for_table_options_dt_health = metadata_df.copy()
-        if selected_database_dt_health != 'All':
-            filtered_df_for_table_options_dt_health = filtered_df_for_table_options_dt_health[filtered_df_for_table_options_dt_health['DATABASE_NAME'] == selected_database_dt_health]
-        if selected_schema_dt_health != 'All':
-            filtered_df_for_table_options_dt_health = filtered_df_for_table_select_options_dt_health[filtered_df_for_table_select_options_dt_health['SCHEMA_NAME'] == selected_schema_dt_health]
+    
+    # This block generates options for table multi-select, so it should be independent of filter applications below
+    # and should be based on the initial DB and Schema selections.
+    filtered_df_for_table_select_options_dt_health = metadata_df.copy()
+    if selected_database_dt_health != 'All':
+        filtered_df_for_table_select_options_dt_health = filtered_df_for_table_select_options_dt_health[filtered_df_for_table_select_options_dt_health['DATABASE_NAME'] == selected_database_dt_health]
+    if selected_schema_dt_health != 'All':
+        filtered_df_for_table_select_options_dt_health = filtered_df_for_table_select_options_dt_health[filtered_df_for_table_select_options_dt_health['SCHEMA_NAME'] == selected_schema_dt_health]
 
-        if not filtered_df_for_table_options_dt_health.empty:
-            all_tables_dt_health_options = ['All'] + sorted(filtered_df_for_table_options_dt_health['TABLE_NAME'].unique().tolist())
+
+    with filter_cols_dt_health[2]:
+        if not filtered_df_for_table_select_options_dt_health.empty:
+            all_tables_dt_health_options = ['All'] + sorted(filtered_df_for_table_select_options_dt_health['TABLE_NAME'].unique().tolist())
             default_tables_dt_health_selected = ['All']
         else:
             all_tables_dt_health_options = ['All']
@@ -117,7 +122,7 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
     st.divider()
 
     # --- Charts Section ---
-    dt_health_chart_cols = st.columns(2) # Place charts side-by-side
+    dt_health_chart_cols = st.columns(2)
 
 
     with dt_health_chart_cols[0]: # Left Column for Scheduling State Distribution Chart
@@ -127,7 +132,6 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
         scheduling_state_counts = filtered_metadata_df['SCHEDULING_STATE_STATUS'].value_counts().reset_index()
         scheduling_state_counts.columns = ['Status', 'Count']
         
-        # Check if there's data to plot scheduling state
         if not scheduling_state_counts.empty:
             fig_scheduling_state = px.pie(scheduling_state_counts, 
                                           values='Count', 
@@ -201,7 +205,7 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
         'TARGET_LAG_SEC', 'MEAN_LAG_SEC', 'MAXIMUM_LAG_SEC', 
         'TIME_ABOVE_TARGET_LAG_SEC', 'TIME_WITHIN_TARGET_LAG_RATIO', 
         'LATEST_DATA_TIMESTAMP', 'LAST_COMPLETED_REFRESH_STATE', 'EXECUTING_REFRESH_QUERY_ID',
-        'COLLECTION_TIMESTAMP' # To show when this snapshot was collected
+        'COLLECTION_TIMESTAMP'
     ]
     
     dt_health_display_labels = {
