@@ -37,7 +37,7 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
         if selected_database_dt_health != 'All':
             filtered_df_for_table_options_dt_health = filtered_df_for_table_options_dt_health[filtered_df_for_table_options_dt_health['DATABASE_NAME'] == selected_database_dt_health]
         if selected_schema_dt_health != 'All':
-            filtered_df_for_table_options_dt_health = filtered_df_for_table_options_dt_health[filtered_df_for_table_options_dt_health['SCHEMA_NAME'] == selected_schema_dt_health]
+            filtered_df_for_table_options_dt_health = filtered_df_for_table_select_options_dt_health[filtered_df_for_table_select_options_dt_health['SCHEMA_NAME'] == selected_schema_dt_health]
 
         if not filtered_df_for_table_options_dt_health.empty:
             all_tables_dt_health_options = ['All'] + sorted(filtered_df_for_table_options_dt_health['TABLE_NAME'].unique().tolist())
@@ -116,21 +116,48 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
         
     st.divider()
 
-    # --- Scheduling State Distribution Chart ---
-    st.subheader("Dynamic Table Scheduling State Distribution")
-    st.write("Current distribution of dynamic tables by their scheduling status (RUNNING vs. SUSPENDED).")
-    
-    scheduling_state_counts = filtered_metadata_df['SCHEDULING_STATE_STATUS'].value_counts().reset_index()
-    scheduling_state_counts.columns = ['Status', 'Count']
-    
-    fig_scheduling_state = px.pie(scheduling_state_counts, 
-                                  values='Count', 
-                                  names='Status', 
-                                  title='Scheduling State Distribution',
-                                  hole=0.3,
-                                  color_discrete_map={'RUNNING': 'green', 'SUSPENDED': 'red'})
-    fig_scheduling_state.update_traces(textposition='inside', textinfo='percent+label')
-    st.plotly_chart(fig_scheduling_state, use_container_width=True)
+    # --- Charts Section ---
+    dt_health_chart_cols = st.columns(2) # Place charts side-by-side
+
+
+    with dt_health_chart_cols[0]: # Left Column for Scheduling State Distribution Chart
+        st.subheader("Dynamic Table Scheduling State Distribution")
+        st.write("Current distribution of dynamic tables by their scheduling status (RUNNING vs. SUSPENDED).")
+        
+        scheduling_state_counts = filtered_metadata_df['SCHEDULING_STATE_STATUS'].value_counts().reset_index()
+        scheduling_state_counts.columns = ['Status', 'Count']
+        
+        # Check if there's data to plot scheduling state
+        if not scheduling_state_counts.empty:
+            fig_scheduling_state = px.pie(scheduling_state_counts, 
+                                          values='Count', 
+                                          names='Status', 
+                                          title='Scheduling State Distribution',
+                                          hole=0.3,
+                                          color_discrete_map={'RUNNING': 'green', 'SUSPENDED': 'red'})
+            fig_scheduling_state.update_traces(textposition='inside', textinfo='percent+label')
+            st.plotly_chart(fig_scheduling_state, use_container_width=True)
+        else:
+            st.info("No scheduling state data to display for selected filters.", icon="ℹ️")
+
+
+    with dt_health_chart_cols[1]: # Right Column for Target Lag Type Distribution Chart (or other)
+        st.subheader("Target Lag Type Distribution")
+        st.write("Distribution of dynamic tables by their target lag definition type.")
+
+        target_lag_type_counts = filtered_metadata_df['TARGET_LAG_TYPE'].value_counts().reset_index()
+        target_lag_type_counts.columns = ['Lag Type', 'Count']
+
+        if not target_lag_type_counts.empty:
+            fig_lag_type = px.pie(target_lag_type_counts,
+                                  values='Count',
+                                  names='Lag Type',
+                                  title='Target Lag Type Distribution',
+                                  hole=0.3)
+            fig_lag_type.update_traces(textposition='inside', textinfo='percent+label')
+            st.plotly_chart(fig_lag_type, use_container_width=True)
+        else:
+            st.info("No target lag type data to display for selected filters.", icon="ℹ️")
 
     st.divider()
 
@@ -138,7 +165,6 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
     st.subheader("Tables Most Frequently Above Target Lag")
     st.write("Top dynamic tables by the total time (in seconds) they have spent above their target lag.")
 
-    # Filter to tables that actually have a TIME_ABOVE_TARGET_LAG_SEC > 0 for this chart
     above_target_lag_df = filtered_metadata_df[
         filtered_metadata_df['TIME_ABOVE_TARGET_LAG_SEC'] > 0
     ].sort_values('TIME_ABOVE_TARGET_LAG_SEC', ascending=False)
@@ -178,7 +204,6 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
         'COLLECTION_TIMESTAMP' # To show when this snapshot was collected
     ]
     
-    # Rename for display in the table header if needed
     dt_health_display_labels = {
         'QUALIFIED_NAME': 'Dynamic Table',
         'SCHEDULING_STATE_STATUS': 'Status',
@@ -195,11 +220,8 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
     }
 
     if not filtered_metadata_df.empty:
-        # Convert numeric columns to appropriate display format for table if needed
-        # .fillna(0) for number fields that could be NaN after filtering
         df_for_dt_health_table = filtered_metadata_df.copy()
         
-        # Sort by status (suspended first), then by mean lag
         df_for_dt_health_table = df_for_dt_health_table.sort_values(
             ['SCHEDULING_STATE_STATUS', 'MEAN_LAG_SEC'], ascending=[False, False]
         )
