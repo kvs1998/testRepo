@@ -1,49 +1,44 @@
-# app_driver.py
-import streamlit as st
-import pandas as pd
-import datetime
-
-import snowflake_data
-
-# Initialize session state flags and timestamps for fresh fetches if they don't exist
-# This ensures that on the first run, the toast implies a fresh fetch.
-if 'history_fresh_fetch' not in st.session_state:
-    st.session_state.history_fresh_fetch = True # Assume fresh on first load
+# Initialize session state for last fetched timestamps
+if 'history_last_fetched_timestamp' not in st.session_state:
     st.session_state.history_last_fetched_timestamp = pd.Timestamp.now()
-if 'metadata_fresh_fetch' not in st.session_state:
-    st.session_state.metadata_fresh_fetch = True # Assume fresh on first load
+if 'metadata_last_fetched_timestamp' not in st.session_state:
     st.session_state.metadata_last_fetched_timestamp = pd.Timestamp.now()
 
 st.set_page_config(layout="wide", page_title="Dynamic Table Dashboard", icon="📊")
 st.title("Dynamic Table Refresh Status Dashboard")
 
-# --- Global Data Loading with Conditional Indicators ---
-# Determine if ANY data was freshly fetched in this rerun
-any_fresh_fetch_occurred = st.session_state.history_fresh_fetch or st.session_state.metadata_fresh_fetch
+# --- Global Data Loading with Manual Cache Hit Detection ---
+spinner_placeholder = st.empty() # Placeholder for the combined spinner
 
-# Reset fresh flags immediately after checking them for this rerun
-st.session_state.history_fresh_fetch = False
-st.session_state.metadata_fresh_fetch = False
-
-# Create a placeholder for the spinner
-spinner_placeholder = st.empty()
+# Custom function to call cached functions and detect if a real fetch occurred
+def load_data_with_indicator(fetch_func, data_identifier):
+    start_time = time.time()
+    
+    # Show combined spinner
+    with spinner_placeholder.spinner(f"Fetching {data_identifier} data..."):
+        df = fetch_func() # This is the call to the @st.cache_data function
+    
+    end_time = time.time()
+    
+    # Determine if it was a cache miss (i.e., took more than minimal time)
+    # This threshold (e.g., 0.1 seconds) needs to be tuned.
+    # If a fetch from cache is super fast (e.g., < 0.01s), it's likely a cache hit.
+    # If it takes longer (e.g., > 0.1s), it's likely a cache miss (new fetch).
+    fetch_duration = end_time - start_time
+    
+    is_fresh_fetch = (fetch_duration > 0.1) # Tune this threshold!
+    
+    if is_fresh_fetch:
+        st.session_state[f'{data_identifier}_last_fetched_timestamp'] = pd.Timestamp.now()
+        st.toast(f"{data_identifier.replace('_', ' ').capitalize()} data updated!", icon="✅")
+    
+    return df
 
 try:
-    # Only show spinner if any fresh fetch is expected (or if it's the very first app load implied by initial flags)
-    if any_fresh_fetch_occurred:
-        with spinner_placeholder.spinner("Connecting to Snowflake and fetching new data..."):
-            history_df = snowflake_data.fetch_dt_refresh_history_data()
-            metadata_df = snowflake_data.fetch_dt_metadata_latest_snapshot_data()
-    else:
-        # If no fresh fetch, just call the functions without a visible spinner
-        history_df = snowflake_data.fetch_dt_refresh_history_data()
-        metadata_df = snowflake_data.fetch_dt_metadata_latest_snapshot_data()
+    history_df = load_data_with_indicator(snowflake_data.fetch_dt_refresh_history_data_cached, 'refresh_history')
+    metadata_df = load_data_with_indicator(snowflake_data.fetch_dt_metadata_latest_snapshot_data_cached, 'metadata_snapshot')
     
-    spinner_placeholder.empty() # Clear the spinner
-    
-    # Show toast message only if a fresh fetch happened for *either* dataset in this rerun
-    if any_fresh_fetch_occurred:
-        st.toast("Dashboard data updated!", icon="✅")
+    spinner_placeholder.empty() # Ensure spinner is cleared after both loads
 
 except Exception as e:
     st.error(f"Failed to load data: {e}. Please ensure your Snowflake connection and data tables are correctly set up.", icon="❗")
@@ -51,7 +46,7 @@ except Exception as e:
     metadata_df = pd.DataFrame()
 
 
-# Initial check for critical data availability (after loading attempts)
+# Initial check for critical data availability
 if history_df.empty and metadata_df.empty:
     st.error("Dashboard cannot render without any data. Please resolve data loading issues.", icon="❗")
     st.stop()
@@ -75,84 +70,4 @@ with freshness_cols[1]:
             unsafe_allow_html=True
         )
 
-st.divider() # Add a divider below freshness indicators
-
-
-
-
-
-# snowflake_data.py
-import streamlit as st
-from snowflake.snowpark import Session
-import pandas as pd
-import json
-
-# --- Callback function to update session state with fresh fetch info ---
-def _on_data_fresh_callback(data_identifier: str):
-    """
-    This callback is executed by st.cache_data when data is fetched fresh (cache miss).
-    Updates session state to indicate that a new fetch just happened for a specific identifier
-    and records the timestamp of that actual fetch.
-    """
-    st.session_state[f'{data_identifier}_fresh_fetch'] = True
-    st.session_state[f'{data_identifier}_last_fetched_timestamp'] = pd.Timestamp.now()
-    # print(f"Cache miss for {data_identifier} at {st.session_state[f'{data_identifier}_last_fetched_timestamp']}") # For debugging
-
-@st.cache_resource
-def get_snowflake_session():
-    """Establishes and caches the Snowflake session."""
-    try:
-        sf_config = st.secrets["snowflake_dev"]
-        session = Session.builder.configs(sf_config).create()
-        return session
-    except Exception:
-        raise
-
-@st.cache_data(ttl=300, on_data_freshness=lambda: _on_data_fresh_callback('history'), persist='disk', show_spinner=False)
-def fetch_dt_refresh_history_data():
-    """
-    Fetches the full refresh history data.
-    """
-    session = get_snowflake_session()
-    hist_df = session.sql(f"""
-        SELECT
-            DATABASE_NAME, SCHEMA_NAME, TABLE_NAME, QUALIFIED_NAME, STATE, STATE_CODE, STATE_MESSAGE, QUERY_ID,
-            DATA_TIMESTAMP, REFRESH_START_TIME, REFRESH_END_TIME, COMPLETION_TARGET,
-            LAST_COMPLETED_DEPENDENCY_QUALIFIED_NAME, LAST_COMPLETED_DEPENDENCY_DATA_TIMESTAMP,
-            NUMINSERTEDROWS, NUMDELETEDROWS, NUMCOPIEDROWS, NUMADDEDPARTITIONS, NUMREMOVEDPARTITIONS,
-            REFRESH_ACTION, REFRESH_TRIGGER, TARGET_LAG_SEC, GRAPH_HISTORY_VALID_FROM
-        FROM YOUR_DB.YOUR_SCHEMA.T_DYNAMIC_TABLE_REFRESH_HISTORY_FLAT
-        ORDER BY DATA_TIMESTAMP DESC
-    """).to_pandas()
-    
-    if not hist_df.empty:
-        hist_df['REFRESH_ACTION'] = hist_df['REFRESH_ACTION'].fillna('N/A').astype(str)
-        hist_df['DATA_TIMESTAMP_DT'] = pd.to_datetime(hist_df['DATA_TIMESTAMP'])
-    return hist_df
-
-@st.cache_data(ttl=60, on_data_freshness=lambda: _on_data_fresh_callback('metadata'), persist='disk', show_spinner=False)
-def fetch_dt_metadata_latest_snapshot_data():
-    """
-    Fetches the latest dynamic table metadata.
-    """
-    session = get_snowflake_session()
-    metadata_df = session.sql(f"""
-        SELECT
-            COLLECTION_TIMESTAMP, DATABASE_NAME, SCHEMA_NAME, TABLE_NAME, QUALIFIED_NAME, TARGET_LAG_SEC, TARGET_LAG_TYPE,
-            SCHEDULING_STATE_STATUS, SCHEDULING_STATE_REASON_CODE, SCHEDULING_STATE_REASON_MESSAGE,
-            SCHEDULING_STATE_SUSPENDED_ON, SCHEDULING_STATE_RESUMED_ON, MEAN_LAG_SEC, MAXIMUM_LAG_SEC,
-            TIME_ABOVE_TARGET_LAG_SEC, TIME_WITHIN_TARGET_LAG_RATIO, LATEST_DATA_TIMESTAMP,
-            LAST_COMPLETED_REFRESH_STATE, LAST_COMPLETED_REFRESH_STATE_CODE, LAST_COMPLETED_REFRESH_STATE_MESSAGE,
-            EXECUTING_REFRESH_QUERY_ID
-        FROM YOUR_DB.YOUR_SCHEMA.T_DYNAMIC_TABLE_METADATA_LATEST_SNAPSHOT
-        ORDER BY COLLECTION_TIMESTAMP DESC
-        QUALIFY ROW_NUMBER() OVER (PARTITION BY QUALIFIED_NAME ORDER BY COLLECTION_TIMESTAMP DESC) = 1
-    """).to_pandas()
-
-    if not metadata_df.empty:
-        for col in ['COLLECTION_TIMESTAMP', 'SCHEDULING_STATE_SUSPENDED_ON', 
-                    'SCHEDULING_STATE_RESUMED_ON', 'LATEST_DATA_TIMESTAMP']:
-            if col in metadata_df.columns:
-                metadata_df[col] = pd.to_datetime(metadata_df[col], errors='coerce')
-    return metadata_df
-
+st.divider()
