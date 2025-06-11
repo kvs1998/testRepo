@@ -3,8 +3,6 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import numpy as np
-import streamlit.components.v1 as components # Import for embedding raw HTML
-
 
 # Helper function to convert seconds to a more readable format
 def format_seconds_to_readable(seconds_series, format_type):
@@ -98,7 +96,7 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
         )
 
     # Filter row for Target Lag and Time Format
-    filter_cols_dt_health_row2 = st.columns([1, 1])
+    filter_cols_dt_health_row2 = st.columns([1, 1]) # Re-setting columns for this row
 
     with filter_cols_dt_health_row2[0]: # Target Lag filter (select box)
         target_lag_options_display = ['All']
@@ -163,6 +161,8 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
         else:
             st.warning("`TARGET_LAG_SEC` column not found in metadata. Target Lag filter skipped.", icon="⚠️")
 
+    # Removed: min_mean_lag_sec and min_max_lag_sec filters from here
+
 
     if filtered_metadata_df.empty:
         st.info("No data available based on current filter selections. Please adjust your filters.", icon="ℹ️")
@@ -205,7 +205,7 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
             st.markdown(f"<h3 style='margin-top:0;'>{total_dt_monitored}</h3>", unsafe_allow_html=True)
             st.markdown(f"<p style='font-size:14px; color:blue; margin-bottom:0;'>Refreshing Now</p>", unsafe_allow_html=True)
             st.markdown(f"<h3 style='margin-top:0;'>{executing_refresh_dt_count} tables</h3>", unsafe_allow_html=True)
-        with kpi_cols_dt_health_row1[1]:
+        with kpi_cols_dt_health_row1[1]: # Fixed column index here
             st.markdown(f"<p style='font-size:14px; color:green; margin-bottom:0;'>Running (Healthy) DTs</p>", unsafe_allow_html=True)
             st.markdown(f"<h3 style='margin-top:0;'>{running_dt_count}</h3>", unsafe_allow_html=True)
             st.markdown(f"<p style='font-size:14px; margin-bottom:0;'>Avg Mean Lag</p>", unsafe_allow_html=True)
@@ -367,7 +367,7 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
 
     # --- Lag Comparison by Table (Grouped Bar Chart) ---
     st.subheader("Lag Comparison by Table (Target, Mean, Max)")
-    st.write("Compare target lag against mean and maximum actual lag for individual dynamic tables. Use the slider below or other filters to adjust the number of tables displayed.")
+    st.write("Compare target lag against mean and maximum actual lag for individual dynamic tables. Filter tables above using the 'Table(s)' filter or the new lag threshold filters below.")
 
     lag_comparison_df = filtered_metadata_df.dropna(subset=['TARGET_LAG_SEC', 'MEAN_LAG_SEC', 'MAXIMUM_LAG_SEC']).copy()
 
@@ -388,11 +388,13 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
 
         display_lag_comparison_df = lag_comparison_df.head(num_tables_lag_comparison)
 
-        # Calculate height for Plotly chart: enough space per group of bars + padding for title/labels
-        # This height ensures bars are not compressed vertically.
-        pixels_per_table_row = 35 # Rough estimate for height needed per table's bar group
-        min_chart_height_for_display = 400 # Minimum height for aesthetic display
-        calculated_chart_height = max(min_chart_height_for_display, len(display_lag_comparison_df) * pixels_per_table_row + 100)
+        # Calculate a reasonable height for the chart to enable scrolling
+        # Each table group will take up a certain amount of vertical space.
+        # Fixed height to enable scrolling/panning when num_tables_lag_comparison is high.
+        # This height ensures each bar is readable and Plotly adds its native scroll functionality.
+        desired_row_height = 30 # px per table group
+        min_chart_height = 400 # Minimum height to prevent chart becoming too small
+        calculated_height = max(min_chart_height, num_tables_lag_comparison * desired_row_height)
 
 
         # Format lag columns for tooltips
@@ -424,7 +426,8 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
                 'MEAN_LAG_SEC': 'darkblue',
                 'MAXIMUM_LAG_SEC': 'orange'
             },
-            height=calculated_chart_height # Set Plotly chart's internal height
+            height=calculated_height # Set a calculated fixed height for scrolling
+            # use_container_width=True # Keep this for horizontal resizing, but might override vertical scrolling if too narrow
         )
 
         # Ensure vertical order by mean lag
@@ -456,42 +459,7 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
             fig_lag_comparison.update_xaxes(type='log')
             st.info("Logarithmic scale applied to X-axis.", icon="ℹ️")
 
-
-        # *** CRITICAL CHANGE FOR SCROLLING ***
-        # Convert Plotly figure to HTML and embed it in a Streamlit HTML component
-        # with fixed height and overflow-y: scroll.
-        # This bypasses potential conflicts with st.plotly_chart's internal rendering.
-        chart_html_string = fig_lag_comparison.to_html(
-            full_html=False,
-            include_plotlyjs='cdn', # Load Plotly.js from CDN to reduce app size
-            default_width='100%',   # Make chart fill available width
-            default_height=calculated_chart_height # Important: Plotly should render at this height
-        )
-
-        # Define a unique ID for the scrollable container
-        chart_container_id = "lag-comparison-chart-scroll-container"
-
-        # Embed the HTML within a custom div with CSS for scrolling
-        components.html(
-            f"""
-            <div id="{chart_container_id}" style="max-height: 600px; overflow-y: scroll; border: 1px solid #e0e0e0; padding: 5px;">
-                {chart_html_string}
-            </div>
-            <script>
-                // Optional: Adjust the Plotly chart's layout to fit the container
-                // This might be needed if Plotly auto-sizes aggressively
-                var chartDiv = document.getElementById('{chart_container_id}').querySelector('.js-plotly-plot');
-                if (chartDiv) {{
-                    Plotly.relayout(chartDiv, {{'autosize': true, 'height': {calculated_chart_height}, 'width': 'auto'}});
-                }}
-            </script>
-            """,
-            height=min(calculated_chart_height + 50, 650), # Height for the Streamlit iframe
-            scrolling=False # Streamlit's iframe should not scroll, the div inside should
-        )
-
-        st.info(f"The chart displays the top {num_tables_lag_comparison} tables. Use the scrollbar on the right side of the chart to view more tables.", icon="💡")
-
+        st.plotly_chart(fig_lag_comparison, use_container_width=True) # Retained use_container_width=True
     else:
         st.info("No lag comparison data to display for selected filters.", icon="ℹ️")
 
