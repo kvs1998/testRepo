@@ -60,7 +60,7 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
         # Ensure explicit copy for temp_df_for_schema_options
         temp_df_for_schema_options = metadata_df.copy()
         if selected_database_dt_health != 'All':
-            temp_df_for_schema_options = temp_df_for_schema_options[temp_df_for_schema_options['DATABASE_NAME'] == selected_database_dt_health].copy() # Added .copy() here
+            temp_df_for_schema_options = temp_df_for_schema_options[temp_df_for_schema_options['DATABASE_NAME'] == selected_database_dt_health].copy()
 
         if not temp_df_for_schema_options.empty:
             schemas_in_db_dt_health = ['All'] + sorted(temp_df_for_schema_options['SCHEMA_NAME'].unique().tolist())
@@ -75,9 +75,9 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
     # Ensure explicit copy for df_for_table_options
     df_for_table_options = metadata_df.copy()
     if selected_database_dt_health != 'All':
-        df_for_table_options = df_for_table_options[df_for_table_options['DATABASE_NAME'] == selected_database_dt_health].copy() # Added .copy() here
+        df_for_table_options = df_for_table_options[df_for_table_options['DATABASE_NAME'] == selected_database_dt_health].copy()
     if selected_schema_dt_health != 'All':
-        df_for_table_options = df_for_table_options[df_for_table_options['SCHEMA_NAME'] == selected_schema_dt_health].copy() # Added .copy() here
+        df_for_table_options = df_for_table_options[df_for_table_options['SCHEMA_NAME'] == selected_schema_dt_health].copy()
 
 
     with filter_cols_dt_health_row1[2]:
@@ -97,8 +97,36 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
             "Scheduling State(s):", options=all_scheduling_states, default=['All'], key="scheduling_state_filter_dt_health"
         )
 
-    filter_cols_dt_health_row2 = st.columns([1])
-    with filter_cols_dt_health_row2[0]:
+    # New row for additional filters: Target Lag first, then Time Format
+    filter_cols_dt_health_row2 = st.columns([1, 1])
+
+    with filter_cols_dt_health_row2[0]: # This will now be the Target Lag filter (left side)
+        # --- Target Lag Filter ---
+        # Get min/max from the original metadata_df to ensure full range is available
+        # Ensure TARGET_LAG_SEC is numeric and handle potential NaNs before finding min/max
+        numeric_target_lags = metadata_df['TARGET_LAG_SEC'].dropna().astype(float)
+
+        min_target_lag = float(numeric_target_lags.min()) if not numeric_target_lags.empty else 0.0
+        max_target_lag = float(numeric_target_lags.max()) if not numeric_target_lags.empty else 100.0
+
+        # Handle cases where min_target_lag == max_target_lag, adjust max slightly to allow range selection
+        if min_target_lag == max_target_lag:
+            max_target_lag += 1.0 # Ensure a minimum range if all values are the same or only one exists
+
+        # Use slider for target lag, showing formatted values but operating on seconds
+        selected_target_lag_range_sec = st.slider(
+            "Target Lag (seconds):",
+            min_value=min_target_lag,
+            max_value=max_target_lag,
+            value=(min_target_lag, max_target_lag),
+            step=1.0, # Adjust step as needed
+            format="%.0f s", # Display format for slider values
+            key="target_lag_filter_dt_health"
+        )
+        st.write(f"Selected range: {format_seconds_to_readable(pd.Series([selected_target_lag_range_sec[0]]), 'mixed').iloc[0]} to {format_seconds_to_readable(pd.Series([selected_target_lag_range_sec[1]]), 'mixed').iloc[0]}")
+
+
+    with filter_cols_dt_health_row2[1]: # This will now be the Time Format selector (right side)
         time_format_option = st.radio(
             "Display Lag Times In:",
             options=["mixed", "seconds", "minutes", "hours", "days"],
@@ -115,20 +143,32 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
     filtered_metadata_df = metadata_df.copy()
 
     if selected_database_dt_health != 'All':
-        filtered_metadata_df = filtered_metadata_df[filtered_metadata_df['DATABASE_NAME'] == selected_database_dt_health].copy() # Added .copy()
+        filtered_metadata_df = filtered_metadata_df[filtered_metadata_df['DATABASE_NAME'] == selected_database_dt_health].copy()
     if selected_schema_dt_health != 'All':
-        filtered_metadata_df = filtered_metadata_df[filtered_metadata_df['SCHEMA_NAME'] == selected_schema_dt_health].copy() # Added .copy()
+        filtered_metadata_df = filtered_metadata_df[filtered_metadata_df['SCHEMA_NAME'] == selected_schema_dt_health].copy()
     if selected_table_dt_health and 'All' not in selected_table_dt_health:
-        filtered_metadata_df = filtered_metadata_df[filtered_metadata_df['TABLE_NAME'].isin(selected_table_dt_health)].copy() # Added .copy()
+        filtered_metadata_df = filtered_metadata_df[filtered_metadata_df['TABLE_NAME'].isin(selected_table_dt_health)].copy()
     elif not selected_table_dt_health:
         st.warning("No table(s) selected. Display will be empty.", icon="⚠️")
         filtered_metadata_df = pd.DataFrame()
 
     if selected_scheduling_state and 'All' not in selected_scheduling_state:
-        filtered_metadata_df = filtered_metadata_df[filtered_metadata_df['SCHEDULING_STATE_STATUS'].isin(selected_scheduling_state)].copy() # Added .copy()
+        filtered_metadata_df = filtered_metadata_df[filtered_metadata_df['SCHEDULING_STATE_STATUS'].isin(selected_scheduling_state)].copy()
     elif not selected_scheduling_state:
         st.warning("No scheduling state(s) selected. Display will be empty.", icon="⚠️")
         filtered_metadata_df = pd.DataFrame()
+
+    # Apply Target Lag filter
+    if not filtered_metadata_df.empty and 'TARGET_LAG_SEC' in filtered_metadata_df.columns:
+        # Filter for non-NA TARGET_LAG_SEC first to avoid issues with comparison
+        temp_df = filtered_metadata_df[filtered_metadata_df['TARGET_LAG_SEC'].notna()].copy()
+        filtered_metadata_df = temp_df[
+            (temp_df['TARGET_LAG_SEC'] >= selected_target_lag_range_sec[0]) &
+            (temp_df['TARGET_LAG_SEC'] <= selected_target_lag_range_sec[1])
+        ].copy()
+    elif 'TARGET_LAG_SEC' not in filtered_metadata_df.columns:
+        st.warning("`TARGET_LAG_SEC` column not found in metadata. Target Lag filter will be skipped.", icon="⚠️")
+
 
     if filtered_metadata_df.empty:
         st.info("No data available based on current filter selections. Please adjust your filters.", icon="ℹ️")
@@ -294,21 +334,10 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
         if not lag_ratio_data.empty:
             lag_ratio_data_pct = lag_ratio_data * 100
 
-            # Define bins for 0-25, 25-50, 50-75, 75-100
-            # For Plotly histograms, 'start', 'end', and 'size' define the bins.
-            # Here we want fixed bins at 0, 25, 50, 75, 100.
-            # We can achieve this with category_orders and explicit bins, or if px.histogram's nbins isn't enough,
-            # we can create the bins manually with pd.cut and then plot a bar chart of the counts.
-            # Using nbins=4 and setting range_x should give us approximately 25-width bins.
-            # To get exact bin boundaries, plotly express's `nbins` is a suggestion.
-            # If `nbins` doesn't give precise 25,50,75,100,
-            # we can use px.histogram(..., xbins=dict(start=0, end=100, size=25)) for exact bins.
             fig_lag_ratio_hist = px.histogram(
                 lag_ratio_data_pct,
                 x="TIME_WITHIN_TARGET_LAG_RATIO",
-                nbins=4, # This will try to create 4 bins, but may not be exact [0,25,50,75,100]
-                # To ensure exact bins:
-                # xbins=dict(start=0, end=100, size=25), # This sets the bins precisely
+                xbins=dict(start=0, end=100, size=25), # This sets the bins precisely at 0, 25, 50, 75, 100
                 title='Time Within Target Lag Ratio Distribution',
                 labels={'TIME_WITHIN_TARGET_LAG_RATIO': 'Ratio (%)'},
                 range_x=[0, 100] # Ensure x-axis goes from 0% to 100%
@@ -418,7 +447,7 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
 
         dt_health_display_labels = {
             'QUALIFIED_NAME': 'Dynamic Table',
-            'INCREMENTAL_ID': 'Incremental ID', # Added this
+            'INCREMENTAL_ID': 'Incremental ID',
             'SCHEDULING_STATE_STATUS': 'Status',
             'SCHEDULING_STATE_REASON_MESSAGE': 'Reason',
             'TARGET_LAG_SEC_FMT': 'Target Lag',
