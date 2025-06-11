@@ -96,7 +96,7 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
         )
 
     # Filter row for Target Lag and Time Format
-    filter_cols_dt_health_row2 = st.columns([1, 1]) # Re-setting columns for this row
+    filter_cols_dt_health_row2 = st.columns([1, 1])
 
     with filter_cols_dt_health_row2[0]: # Target Lag filter (select box)
         target_lag_options_display = ['All']
@@ -161,8 +161,6 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
         else:
             st.warning("`TARGET_LAG_SEC` column not found in metadata. Target Lag filter skipped.", icon="⚠️")
 
-    # Removed: min_mean_lag_sec and min_max_lag_sec filters from here
-
 
     if filtered_metadata_df.empty:
         st.info("No data available based on current filter selections. Please adjust your filters.", icon="ℹ️")
@@ -205,7 +203,7 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
             st.markdown(f"<h3 style='margin-top:0;'>{total_dt_monitored}</h3>", unsafe_allow_html=True)
             st.markdown(f"<p style='font-size:14px; color:blue; margin-bottom:0;'>Refreshing Now</p>", unsafe_allow_html=True)
             st.markdown(f"<h3 style='margin-top:0;'>{executing_refresh_dt_count} tables</h3>", unsafe_allow_html=True)
-        with kpi_cols_dt_health_row1[1]: # Fixed column index here
+        with kpi_cols_dt_health_row1[1]: # Corrected column index
             st.markdown(f"<p style='font-size:14px; color:green; margin-bottom:0;'>Running (Healthy) DTs</p>", unsafe_allow_html=True)
             st.markdown(f"<h3 style='margin-top:0;'>{running_dt_count}</h3>", unsafe_allow_html=True)
             st.markdown(f"<p style='font-size:14px; margin-bottom:0;'>Avg Mean Lag</p>", unsafe_allow_html=True)
@@ -367,7 +365,7 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
 
     # --- Lag Comparison by Table (Grouped Bar Chart) ---
     st.subheader("Lag Comparison by Table (Target, Mean, Max)")
-    st.write("Compare target lag against mean and maximum actual lag for individual dynamic tables. Filter tables above using the 'Table(s)' filter or the new lag threshold filters below.")
+    st.write("Compare target lag against mean and maximum actual lag for individual dynamic tables. Filter tables above using the 'Table(s)' filter.")
 
     lag_comparison_df = filtered_metadata_df.dropna(subset=['TARGET_LAG_SEC', 'MEAN_LAG_SEC', 'MAXIMUM_LAG_SEC']).copy()
 
@@ -388,15 +386,6 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
 
         display_lag_comparison_df = lag_comparison_df.head(num_tables_lag_comparison)
 
-        # Calculate a reasonable height for the chart to enable scrolling
-        # Each table group will take up a certain amount of vertical space.
-        # Fixed height to enable scrolling/panning when num_tables_lag_comparison is high.
-        # This height ensures each bar is readable and Plotly adds its native scroll functionality.
-        desired_row_height = 30 # px per table group
-        min_chart_height = 400 # Minimum height to prevent chart becoming too small
-        calculated_height = max(min_chart_height, num_tables_lag_comparison * desired_row_height)
-
-
         # Format lag columns for tooltips
         display_lag_comparison_df['MEAN_LAG_FMT'] = format_seconds_to_readable(display_lag_comparison_df['MEAN_LAG_SEC'], time_format_option)
         display_lag_comparison_df['MAX_LAG_FMT'] = format_seconds_to_readable(display_lag_comparison_df['MAXIMUM_LAG_SEC'], time_format_option)
@@ -411,6 +400,14 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
 
         melted_lag_df['Formatted_Lag_Value'] = format_seconds_to_readable(melted_lag_df['Lag_Value_Seconds'], time_format_option)
 
+        # Calculate height dynamically based on the number of bars.
+        # This will ensure bars have a consistent height, and the chart will
+        # become taller to accommodate more bars.
+        # When the chart's height exceeds the viewport, the Streamlit page's
+        # scrollbar (or Plotly's internal scroll) should activate.
+        # A rough estimate: 30-40 pixels per table row (group of 3 bars)
+        # Add some padding for title, labels etc.
+        chart_total_height_px = max(400, len(display_lag_comparison_df) * 35 + 100) # Minimum 400px height
 
         fig_lag_comparison = px.bar(
             melted_lag_df,
@@ -426,8 +423,7 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
                 'MEAN_LAG_SEC': 'darkblue',
                 'MAXIMUM_LAG_SEC': 'orange'
             },
-            height=calculated_height # Set a calculated fixed height for scrolling
-            # use_container_width=True # Keep this for horizontal resizing, but might override vertical scrolling if too narrow
+            height=calculated_height # Set a fixed height to encourage scrolling behavior
         )
 
         # Ensure vertical order by mean lag
@@ -459,7 +455,37 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
             fig_lag_comparison.update_xaxes(type='log')
             st.info("Logarithmic scale applied to X-axis.", icon="ℹ️")
 
-        st.plotly_chart(fig_lag_comparison, use_container_width=True) # Retained use_container_width=True
+        # RENDER THE CHART WITHIN A SCROLLABLE CONTAINER
+        # Define a CSS class for our scrollable container
+        st.markdown(
+            """
+            <style>
+            .scrollable-chart-container {
+                max-height: 600px; /* Adjust as needed */
+                overflow-y: auto;
+                border: 1px solid #e0e0e0; /* Optional: adds a border to show container */
+                padding: 10px;
+                margin-bottom: 20px;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True
+        )
+
+        # Use an st.empty() to create a placeholder, then write raw HTML
+        # This allows us to insert a div with a specific class for CSS targeting
+        # This is a common pattern for applying CSS to Streamlit elements not directly controllable.
+        chart_placeholder = st.empty()
+        with chart_placeholder:
+            # Generate the Plotly figure as HTML
+            chart_html = fig_lag_comparison.to_html(full_html=False, include_plotlyjs='cdn')
+            # Embed it within our custom scrollable div
+            st.markdown(f'<div class="scrollable-chart-container">{chart_html}</div>', unsafe_allow_html=True)
+
+        # Add a note if needed about scrolling
+        if len(display_lag_comparison_df) * 35 + 100 > 600: # If it likely exceeds max_height
+            st.info("Scroll within the chart area to view all tables.", icon="💡")
+
     else:
         st.info("No lag comparison data to display for selected filters.", icon="ℹ️")
 
