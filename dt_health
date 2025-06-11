@@ -203,7 +203,7 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
             st.markdown(f"<h3 style='margin-top:0;'>{total_dt_monitored}</h3>", unsafe_allow_html=True)
             st.markdown(f"<p style='font-size:14px; color:blue; margin-bottom:0;'>Refreshing Now</p>", unsafe_allow_html=True)
             st.markdown(f"<h3 style='margin-top:0;'>{executing_refresh_dt_count} tables</h3>", unsafe_allow_html=True)
-        with kpi_cols_dt_health_row1[1]: # Corrected column index
+        with kpi_cols_dt_health_row1[1]:
             st.markdown(f"<p style='font-size:14px; color:green; margin-bottom:0;'>Running (Healthy) DTs</p>", unsafe_allow_html=True)
             st.markdown(f"<h3 style='margin-top:0;'>{running_dt_count}</h3>", unsafe_allow_html=True)
             st.markdown(f"<p style='font-size:14px; margin-bottom:0;'>Avg Mean Lag</p>", unsafe_allow_html=True)
@@ -386,6 +386,14 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
 
         display_lag_comparison_df = lag_comparison_df.head(num_tables_lag_comparison)
 
+        # Calculate height dynamically based on the number of bars.
+        # This will ensure bars have a consistent height, and the chart will
+        # become taller to accommodate more bars.
+        # A rough estimate: 35 pixels per table row (group of 3 bars) + padding
+        # Use a minimum height to prevent it from becoming too small if only a few tables.
+        calculated_height = max(400, len(display_lag_comparison_df) * 35 + 100) # Added back calculated_height
+
+
         # Format lag columns for tooltips
         display_lag_comparison_df['MEAN_LAG_FMT'] = format_seconds_to_readable(display_lag_comparison_df['MEAN_LAG_SEC'], time_format_option)
         display_lag_comparison_df['MAX_LAG_FMT'] = format_seconds_to_readable(display_lag_comparison_df['MAXIMUM_LAG_SEC'], time_format_option)
@@ -400,14 +408,6 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
 
         melted_lag_df['Formatted_Lag_Value'] = format_seconds_to_readable(melted_lag_df['Lag_Value_Seconds'], time_format_option)
 
-        # Calculate height dynamically based on the number of bars.
-        # This will ensure bars have a consistent height, and the chart will
-        # become taller to accommodate more bars.
-        # When the chart's height exceeds the viewport, the Streamlit page's
-        # scrollbar (or Plotly's internal scroll) should activate.
-        # A rough estimate: 30-40 pixels per table row (group of 3 bars)
-        # Add some padding for title, labels etc.
-        chart_total_height_px = max(400, len(display_lag_comparison_df) * 35 + 100) # Minimum 400px height
 
         fig_lag_comparison = px.bar(
             melted_lag_df,
@@ -423,7 +423,7 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
                 'MEAN_LAG_SEC': 'darkblue',
                 'MAXIMUM_LAG_SEC': 'orange'
             },
-            height=calculated_height # Set a fixed height to encourage scrolling behavior
+            height=calculated_height # Re-introduced height to ensure chart itself renders tall
         )
 
         # Ensure vertical order by mean lag
@@ -461,8 +461,8 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
             """
             <style>
             .scrollable-chart-container {
-                max-height: 600px; /* Adjust as needed */
-                overflow-y: auto;
+                max-height: 600px; /* Adjust as needed - this sets the maximum visible height for the scrollable area */
+                overflow-y: auto; /* This creates the vertical scrollbar when content exceeds max-height */
                 border: 1px solid #e0e0e0; /* Optional: adds a border to show container */
                 padding: 10px;
                 margin-bottom: 20px;
@@ -474,16 +474,17 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
 
         # Use an st.empty() to create a placeholder, then write raw HTML
         # This allows us to insert a div with a specific class for CSS targeting
-        # This is a common pattern for applying CSS to Streamlit elements not directly controllable.
         chart_placeholder = st.empty()
         with chart_placeholder:
             # Generate the Plotly figure as HTML
-            chart_html = fig_lag_comparison.to_html(full_html=False, include_plotlyjs='cdn')
+            # Ensure use_container_width=True for the inner Plotly chart if desired,
+            # or remove it if you want fixed width. Let's keep it for responsiveness.
+            chart_html = fig_lag_comparison.to_html(full_html=False, include_plotlyjs='cdn', default_width='100%') # Added default_width
             # Embed it within our custom scrollable div
             st.markdown(f'<div class="scrollable-chart-container">{chart_html}</div>', unsafe_allow_html=True)
 
         # Add a note if needed about scrolling
-        if len(display_lag_comparison_df) * 35 + 100 > 600: # If it likely exceeds max_height
+        if calculated_height > 600: # If the chart's native height exceeds the container's max-height
             st.info("Scroll within the chart area to view all tables.", icon="💡")
 
     else:
