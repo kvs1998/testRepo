@@ -3,6 +3,8 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import numpy as np
+import streamlit.components.v1 as components # Import for embedding raw HTML
+
 
 # Helper function to convert seconds to a more readable format
 def format_seconds_to_readable(seconds_series, format_type):
@@ -377,8 +379,8 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
         num_tables_lag_comparison = st.slider(
             "Show Top N Tables for Lag Comparison:",
             min_value=5,
-            max_value=len(lag_comparison_df),
-            value=min(15, len(lag_comparison_df)),
+            max_value=len(lag_comparison_df), # Max value should be the actual number of filtered tables
+            value=min(15, len(lag_comparison_df)), # A reasonable default, adjusts if fewer tables
             step=1,
             key="lag_comparison_slider_dt_health"
         )
@@ -454,12 +456,41 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
             fig_lag_comparison.update_xaxes(type='log')
             st.info("Logarithmic scale applied to X-axis.", icon="ℹ️")
 
-        # RENDER THE CHART
-        st.plotly_chart(fig_lag_comparison, use_container_width=True)
 
-        # Add a tip for the user about scrolling (panning)
-        if len(display_lag_comparison_df) > 10: # If there are many tables, suggest interaction
-            st.info("Tip: Click and drag (pan) within the chart area to scroll through all tables.", icon="💡")
+        # *** CRITICAL CHANGE FOR SCROLLING ***
+        # Convert Plotly figure to HTML and embed it in a Streamlit HTML component
+        # with fixed height and overflow-y: scroll.
+        # This bypasses potential conflicts with st.plotly_chart's internal rendering.
+        chart_html_string = fig_lag_comparison.to_html(
+            full_html=False,
+            include_plotlyjs='cdn', # Load Plotly.js from CDN to reduce app size
+            default_width='100%',   # Make chart fill available width
+            default_height=calculated_chart_height # Important: Plotly should render at this height
+        )
+
+        # Define a unique ID for the scrollable container
+        chart_container_id = "lag-comparison-chart-scroll-container"
+
+        # Embed the HTML within a custom div with CSS for scrolling
+        components.html(
+            f"""
+            <div id="{chart_container_id}" style="max-height: 600px; overflow-y: scroll; border: 1px solid #e0e0e0; padding: 5px;">
+                {chart_html_string}
+            </div>
+            <script>
+                // Optional: Adjust the Plotly chart's layout to fit the container
+                // This might be needed if Plotly auto-sizes aggressively
+                var chartDiv = document.getElementById('{chart_container_id}').querySelector('.js-plotly-plot');
+                if (chartDiv) {{
+                    Plotly.relayout(chartDiv, {{'autosize': true, 'height': {calculated_chart_height}, 'width': 'auto'}});
+                }}
+            </script>
+            """,
+            height=min(calculated_chart_height + 50, 650), # Height for the Streamlit iframe
+            scrolling=False # Streamlit's iframe should not scroll, the div inside should
+        )
+
+        st.info(f"The chart displays the top {num_tables_lag_comparison} tables. Use the scrollbar on the right side of the chart to view more tables.", icon="💡")
 
     else:
         st.info("No lag comparison data to display for selected filters.", icon="ℹ️")
