@@ -105,7 +105,7 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
         target_lag_value_map = {}
 
         if 'TARGET_LAG_SEC' in metadata_df.columns and not metadata_df['TARGET_LAG_SEC'].empty:
-            # Get unique target lag values, drop NaNs, convert to float (or int if always whole numbers), sort
+            # Get unique target lag values, drop NaNs, convert to float, sort
             unique_target_lags_sec = sorted(metadata_df['TARGET_LAG_SEC'].dropna().astype(float).unique().tolist())
 
             # Format each unique value and store the mapping
@@ -213,7 +213,7 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
         with kpi_cols_dt_health_row1[1]:
             st.markdown(f"<p style='font-size:14px; color:green; margin-bottom:0;'>Running (Healthy) DTs</p>", unsafe_allow_html=True)
             st.markdown(f"<h3 style='margin-top:0;'>{running_dt_count}</h3>", unsafe_allow_html=True)
-            st.markdown(f"<p style='font-size:14px; margin-bottom:0;'>Avg Mean Lag</p>", unsafe_allow_html=True)
+            st.markdown(f"<p style style='font-size:14px; margin-bottom:0;'>Avg Mean Lag</p>", unsafe_allow_html=True)
             st.markdown(f"<h3 style='margin-top:0;'>{avg_mean_lag_fmt}</h3>", unsafe_allow_html=True)
 
         kpi_cols_dt_health_row2 = st.columns(2)
@@ -339,7 +339,10 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
         fig_lag_ratio_hist = px.histogram(
             lag_ratio_data_pct,
             x="TIME_WITHIN_TARGET_LAG_RATIO",
-            xbins=dict(start=0, end=100, size=25), # Sets bins precisely at 0, 25, 50, 75, 100
+            # Removed 'xbins' and replaced with 'nbins' as per original code for compatibility
+            # If you want precise 25% bins and can upgrade Plotly, use:
+            # xbins=dict(start=0, end=100, size=25),
+            nbins=4, # This will try to approximate 4 bins between 0 and 100
             title='Time Within Target Lag Ratio Distribution',
             labels={'TIME_WITHIN_TARGET_LAG_RATIO': 'Ratio (%)'},
             range_x=[0, 100] # Ensure x-axis goes from 0% to 100%
