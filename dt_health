@@ -95,9 +95,8 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
             "Scheduling State(s):", options=all_scheduling_states, default=['All'], key="scheduling_state_filter_dt_health"
         )
 
-    # NEW FILTER ROW: Target Lag on the left, Time Format on the right, and new lag thresholds
-    filter_cols_dt_health_row2 = st.columns([1, 1])
-    filter_cols_dt_health_row3 = st.columns([1, 1]) # New row for lag threshold filters
+    # Filter row for Target Lag and Time Format
+    filter_cols_dt_health_row2 = st.columns([1, 1]) # Re-setting columns for this row
 
     with filter_cols_dt_health_row2[0]: # Target Lag filter (select box)
         target_lag_options_display = ['All']
@@ -131,30 +130,6 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
             key="time_format_dt_health"
         )
 
-    with filter_cols_dt_health_row3[0]: # New: Minimum Mean Lag
-        min_mean_lag_sec = st.number_input(
-            "Minimum Mean Lag (seconds):",
-            min_value=0.0,
-            value=0.0,
-            step=1.0,
-            format="%.0f",
-            key="min_mean_lag_filter_dt_health"
-        )
-        st.write(f"Show tables with Mean Lag >= {format_seconds_to_readable(pd.Series([min_mean_lag_sec]), 'mixed').iloc[0]}")
-
-
-    with filter_cols_dt_health_row3[1]: # New: Minimum Maximum Lag
-        min_max_lag_sec = st.number_input(
-            "Minimum Max Lag (seconds):",
-            min_value=0.0,
-            value=0.0,
-            step=1.0,
-            format="%.0f",
-            key="min_max_lag_filter_dt_health"
-        )
-        st.write(f"Show tables with Max Lag >= {format_seconds_to_readable(pd.Series([min_max_lag_sec]), 'mixed').iloc[0]}")
-
-
     st.markdown("---")
 
 
@@ -186,23 +161,7 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
         else:
             st.warning("`TARGET_LAG_SEC` column not found in metadata. Target Lag filter skipped.", icon="⚠️")
 
-    # Apply Minimum Mean Lag filter
-    if min_mean_lag_sec > 0:
-        if 'MEAN_LAG_SEC' in filtered_metadata_df.columns:
-            filtered_metadata_df = filtered_metadata_df[
-                filtered_metadata_df['MEAN_LAG_SEC'].fillna(0) >= min_mean_lag_sec
-            ].copy()
-        else:
-            st.warning("`MEAN_LAG_SEC` column not found in metadata. Minimum Mean Lag filter skipped.", icon="⚠️")
-
-    # Apply Minimum Maximum Lag filter
-    if min_max_lag_sec > 0:
-        if 'MAXIMUM_LAG_SEC' in filtered_metadata_df.columns:
-            filtered_metadata_df = filtered_metadata_df[
-                filtered_metadata_df['MAXIMUM_LAG_SEC'].fillna(0) >= min_max_lag_sec
-            ].copy()
-        else:
-            st.warning("`MAXIMUM_LAG_SEC` column not found in metadata. Minimum Maximum Lag filter skipped.", icon="⚠️")
+    # Removed: min_mean_lag_sec and min_max_lag_sec filters from here
 
 
     if filtered_metadata_df.empty:
@@ -373,8 +332,7 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
         lag_ratio_data_pct = lag_ratio_data * 100
 
         # Define bins and labels for pd.cut to ensure exact 25% intervals
-        # Ensure the bins cover 0 to 100 inclusive.
-        bins = [0, 25, 50, 75, 101] # Use 101 as upper bound to include 100 in the last bin [75, 101)
+        bins = [0, 25, 50, 75, 101]
         labels = ['0-25%', '25-50%', '50-75%', '75-100%']
 
         # Create categorical bins
@@ -382,12 +340,11 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
             lag_ratio_data_pct,
             bins=bins,
             labels=labels,
-            right=False, # [0, 25), [25, 50), etc.
-            include_lowest=True # Include the 0 in the first bin
-        ).astype(str) # Convert to string to prevent Plotly sorting issues
+            right=False,
+            include_lowest=True
+        ).astype(str)
 
         # Get counts for each bin
-        # reindex ensures all labels are present, even if count is 0
         binned_counts = binned_data.value_counts().reindex(labels, fill_value=0).reset_index()
         binned_counts.columns = ['Ratio_Range', 'Count']
 
@@ -399,7 +356,7 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
             labels={'Ratio_Range': 'Ratio (%)', 'Count': 'Number of DTs'},
         )
         fig_lag_ratio_hist.update_layout(bargap=0.1)
-        fig_lag_ratio_hist.update_xaxes(categoryorder='array', categoryarray=labels) # Ensure correct order
+        fig_lag_ratio_hist.update_xaxes(categoryorder='array', categoryarray=labels)
 
         st.plotly_chart(fig_lag_ratio_hist, use_container_width=True)
     else:
@@ -431,11 +388,13 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
 
         display_lag_comparison_df = lag_comparison_df.head(num_tables_lag_comparison)
 
-        # Calculate dynamic chart height based on number of bars
-        # A good heuristic is about 30-40 pixels per bar group (3 bars + padding)
-        # Minimum height to prevent super tiny charts
-        bar_height_per_group = 35 # Pixels per table group
-        chart_height = max(400, len(display_lag_comparison_df) * bar_height_per_group)
+        # Calculate a reasonable height for the chart to enable scrolling
+        # Each table group will take up a certain amount of vertical space.
+        # Fixed height to enable scrolling/panning when num_tables_lag_comparison is high.
+        # This height ensures each bar is readable and Plotly adds its native scroll functionality.
+        desired_row_height = 30 # px per table group
+        min_chart_height = 400 # Minimum height to prevent chart becoming too small
+        calculated_height = max(min_chart_height, num_tables_lag_comparison * desired_row_height)
 
 
         # Format lag columns for tooltips
@@ -467,7 +426,8 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
                 'MEAN_LAG_SEC': 'darkblue',
                 'MAXIMUM_LAG_SEC': 'orange'
             },
-            height=chart_height # <-- ADDED: Set the height here
+            height=calculated_height # Set a calculated fixed height for scrolling
+            # use_container_width=True # Keep this for horizontal resizing, but might override vertical scrolling if too narrow
         )
 
         # Ensure vertical order by mean lag
@@ -499,7 +459,7 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
             fig_lag_comparison.update_xaxes(type='log')
             st.info("Logarithmic scale applied to X-axis.", icon="ℹ️")
 
-        st.plotly_chart(fig_lag_comparison, use_container_width=True)
+        st.plotly_chart(fig_lag_comparison, use_container_width=True) # Retained use_container_width=True
     else:
         st.info("No lag comparison data to display for selected filters.", icon="ℹ️")
 
