@@ -96,35 +96,39 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
         )
 
     # NEW FILTER ROW: Target Lag on the left, Time Format on the right
-    filter_cols_dt_health_row2 = st.columns([1, 1]) # Adjusting columns for new layout
+    filter_cols_dt_health_row2 = st.columns([1, 1])
 
-    with filter_cols_dt_health_row2[0]: # This is the new position for Target Lag filter
-        # --- Target Lag Filter ---
-        # Get min/max from the original metadata_df to ensure full range is available
-        # Ensure TARGET_LAG_SEC is numeric and handle potential NaNs before finding min/max
-        numeric_target_lags = metadata_df['TARGET_LAG_SEC'].dropna().astype(float)
+    with filter_cols_dt_health_row2[0]: # Target Lag filter (select box)
+        # --- Target Lag Filter (Select Box) ---
+        target_lag_options_display = ['All']
+        # Dictionary to map displayed string back to original seconds value for filtering
+        target_lag_value_map = {}
 
-        min_target_lag = float(numeric_target_lags.min()) if not numeric_target_lags.empty else 0.0
-        max_target_lag = float(numeric_target_lags.max()) if not numeric_target_lags.empty else 100.0 # Default if no data
+        if 'TARGET_LAG_SEC' in metadata_df.columns and not metadata_df['TARGET_LAG_SEC'].empty:
+            # Get unique target lag values, drop NaNs, convert to float (or int if always whole numbers), sort
+            unique_target_lags_sec = sorted(metadata_df['TARGET_LAG_SEC'].dropna().astype(float).unique().tolist())
 
-        # Handle cases where min_target_lag == max_target_lag, adjust max slightly to allow range selection
-        if min_target_lag == max_target_lag:
-            max_target_lag += 1.0 # Ensure a minimum range if all values are the same or only one exists
+            # Format each unique value and store the mapping
+            for sec_val in unique_target_lags_sec:
+                formatted_val = format_seconds_to_readable(pd.Series([sec_val]), 'mixed').iloc[0]
+                target_lag_options_display.append(formatted_val)
+                target_lag_value_map[formatted_val] = sec_val
+        else:
+            st.info("No 'TARGET_LAG_SEC' data available to populate target lag filter.", icon="ℹ️")
 
-        # Use slider for target lag, showing formatted values but operating on seconds
-        selected_target_lag_range_sec = st.slider(
-            "Target Lag (seconds):",
-            min_value=min_target_lag,
-            max_value=max_target_lag,
-            value=(min_target_lag, max_target_lag),
-            step=1.0, # Adjust step as needed
-            format="%.0f s", # Display format for slider values
-            key="target_lag_filter_dt_health"
+        selected_target_lag_display = st.selectbox(
+            "Target Lag:",
+            options=target_lag_options_display,
+            key="target_lag_filter_dt_health_selectbox"
         )
-        st.write(f"Selected range: {format_seconds_to_readable(pd.Series([selected_target_lag_range_sec[0]]), 'mixed').iloc[0]} to {format_seconds_to_readable(pd.Series([selected_target_lag_range_sec[1]]), 'mixed').iloc[0]}")
+
+        # Retrieve the numerical value for filtering using the map
+        selected_target_lag_sec_for_filter = None
+        if selected_target_lag_display != 'All':
+            selected_target_lag_sec_for_filter = target_lag_value_map.get(selected_target_lag_display)
 
 
-    with filter_cols_dt_health_row2[1]: # This is the new position for Time Format selector
+    with filter_cols_dt_health_row2[1]: # Time Format selector
         time_format_option = st.radio(
             "Display Lag Times In:",
             options=["mixed", "seconds", "minutes", "hours", "days"],
@@ -140,30 +144,29 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
     filtered_metadata_df = metadata_df.copy()
 
     if selected_database_dt_health != 'All':
-        filtered_metadata_df = filtered_metadata_df[filtered_metadata_df['DATABASE_NAME'] == selected_database_dt_health]
+        filtered_metadata_df = filtered_metadata_df[filtered_metadata_df['DATABASE_NAME'] == selected_database_dt_health].copy()
     if selected_schema_dt_health != 'All':
-        filtered_metadata_df = filtered_metadata_df[filtered_metadata_df['SCHEMA_NAME'] == selected_schema_dt_health]
+        filtered_metadata_df = filtered_metadata_df[filtered_metadata_df['SCHEMA_NAME'] == selected_schema_dt_health].copy()
     if selected_table_dt_health and 'All' not in selected_table_dt_health:
-        filtered_metadata_df = filtered_metadata_df[filtered_metadata_df['TABLE_NAME'].isin(selected_table_dt_health)]
+        filtered_metadata_df = filtered_metadata_df[filtered_metadata_df['TABLE_NAME'].isin(selected_table_dt_health)].copy()
     elif not selected_table_dt_health:
         st.warning("No table(s) selected. Display will be empty.", icon="⚠️")
         filtered_metadata_df = pd.DataFrame()
 
     if selected_scheduling_state and 'All' not in selected_scheduling_state:
-        filtered_metadata_df = filtered_metadata_df[filtered_metadata_df['SCHEDULING_STATE_STATUS'].isin(selected_scheduling_state)]
+        filtered_metadata_df = filtered_metadata_df[filtered_metadata_df['SCHEDULING_STATE_STATUS'].isin(selected_scheduling_state)].copy()
     elif not selected_scheduling_state:
         st.warning("No scheduling state(s) selected. Display will be empty.", icon="⚠️")
         filtered_metadata_df = pd.DataFrame()
 
-    # Apply Target Lag filter - Moved here
-    if not filtered_metadata_df.empty and 'TARGET_LAG_SEC' in filtered_metadata_df.columns:
-        temp_df = filtered_metadata_df[filtered_metadata_df['TARGET_LAG_SEC'].notna()].copy() # Ensure handling of NaNs
-        filtered_metadata_df = temp_df[
-            (temp_df['TARGET_LAG_SEC'] >= selected_target_lag_range_sec[0]) &
-            (temp_df['TARGET_LAG_SEC'] <= selected_target_lag_range_sec[1])
-        ].copy() # Ensure chain assignment with .copy()
-    elif 'TARGET_LAG_SEC' not in filtered_metadata_df.columns:
-        st.warning("`TARGET_LAG_SEC` column not found in metadata. Target Lag filter will be skipped.", icon="⚠️")
+    # Apply Target Lag filter (using selectbox value)
+    if selected_target_lag_display != 'All' and selected_target_lag_sec_for_filter is not None:
+        if 'TARGET_LAG_SEC' in filtered_metadata_df.columns:
+            filtered_metadata_df = filtered_metadata_df[
+                filtered_metadata_df['TARGET_LAG_SEC'] == selected_target_lag_sec_for_filter
+            ].copy()
+        else:
+            st.warning("`TARGET_LAG_SEC` column not found in metadata. Target Lag filter skipped.", icon="⚠️")
 
 
     if filtered_metadata_df.empty:
@@ -448,7 +451,7 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
 
         dt_health_display_labels = {
             'QUALIFIED_NAME': 'Dynamic Table',
-            'INCREMENTAL_ID': 'Incremental ID', # Added this
+            'INCREMENTAL_ID': 'Incremental ID',
             'SCHEDULING_STATE_STATUS': 'Status',
             'SCHEDULING_STATE_REASON_MESSAGE': 'Reason',
             'TARGET_LAG_SEC_FMT': 'Target Lag',
