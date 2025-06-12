@@ -3,6 +3,8 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import numpy as np
+import streamlit.components.v1 as components # Import for embedding raw HTML
+
 
 # Helper function to convert seconds to a more readable format
 def format_seconds_to_readable(seconds_series, format_type):
@@ -96,7 +98,7 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
         )
 
     # Filter row for Target Lag and Time Format
-    filter_cols_dt_health_row2 = st.columns([1, 1]) # Re-setting columns for this row
+    filter_cols_dt_health_row2 = st.columns([1, 1])
 
     with filter_cols_dt_health_row2[0]: # Target Lag filter (select box)
         target_lag_options_display = ['All']
@@ -161,8 +163,6 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
         else:
             st.warning("`TARGET_LAG_SEC` column not found in metadata. Target Lag filter skipped.", icon="⚠️")
 
-    # Removed: min_mean_lag_sec and min_max_lag_sec filters from here
-
 
     if filtered_metadata_df.empty:
         st.info("No data available based on current filter selections. Please adjust your filters.", icon="ℹ️")
@@ -205,7 +205,7 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
             st.markdown(f"<h3 style='margin-top:0;'>{total_dt_monitored}</h3>", unsafe_allow_html=True)
             st.markdown(f"<p style='font-size:14px; color:blue; margin-bottom:0;'>Refreshing Now</p>", unsafe_allow_html=True)
             st.markdown(f"<h3 style='margin-top:0;'>{executing_refresh_dt_count} tables</h3>", unsafe_allow_html=True)
-        with kpi_cols_dt_health_row1[1]: # Fixed column index here
+        with kpi_cols_dt_health_row1[1]:
             st.markdown(f"<p style='font-size:14px; color:green; margin-bottom:0;'>Running (Healthy) DTs</p>", unsafe_allow_html=True)
             st.markdown(f"<h3 style='margin-top:0;'>{running_dt_count}</h3>", unsafe_allow_html=True)
             st.markdown(f"<p style='font-size:14px; margin-bottom:0;'>Avg Mean Lag</p>", unsafe_allow_html=True)
@@ -322,7 +322,7 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
 
     st.divider()
 
-    # --- New Chart: Time Within Target Lag Ratio Distribution (Using pd.cut for explicit bins) ---
+    # --- New Chart: Time Within Target Lag Ratio Distribution (Using pd.cut for explicit bins and showing text) ---
     st.markdown("<p style='font-size:16px;'><b>Time Within Target Lag Ratio Distribution</b></p>", unsafe_allow_html=True)
     st.write("Distribution of dynamic tables based on how often their actual lag is within the target lag (0-100%).")
 
@@ -354,9 +354,11 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
             y='Count',
             title='Time Within Target Lag Ratio Distribution',
             labels={'Ratio_Range': 'Ratio (%)', 'Count': 'Number of DTs'},
+            text='Count' # ADDED: This tells Plotly to use the 'Count' column for text labels on bars
         )
         fig_lag_ratio_hist.update_layout(bargap=0.1)
         fig_lag_ratio_hist.update_xaxes(categoryorder='array', categoryarray=labels)
+        fig_lag_ratio_hist.update_traces(textposition='outside') # Make sure text is visible outside the bars
 
         st.plotly_chart(fig_lag_ratio_hist, use_container_width=True)
     else:
@@ -367,7 +369,7 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
 
     # --- Lag Comparison by Table (Grouped Bar Chart) ---
     st.subheader("Lag Comparison by Table (Target, Mean, Max)")
-    st.write("Compare target lag against mean and maximum actual lag for individual dynamic tables. Filter tables above using the 'Table(s)' filter or the new lag threshold filters below.")
+    st.write("Compare target lag against mean and maximum actual lag for individual dynamic tables. Use the slider below or other filters to adjust the number of tables displayed.")
 
     lag_comparison_df = filtered_metadata_df.dropna(subset=['TARGET_LAG_SEC', 'MEAN_LAG_SEC', 'MAXIMUM_LAG_SEC']).copy()
 
@@ -388,46 +390,67 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
 
         display_lag_comparison_df = lag_comparison_df.head(num_tables_lag_comparison)
 
-        # Calculate a reasonable height for the chart to enable scrolling
-        # Each table group will take up a certain amount of vertical space.
-        # Fixed height to enable scrolling/panning when num_tables_lag_comparison is high.
-        # This height ensures each bar is readable and Plotly adds its native scroll functionality.
-        desired_row_height = 30 # px per table group
-        min_chart_height = 400 # Minimum height to prevent chart becoming too small
-        calculated_height = max(min_chart_height, num_tables_lag_comparison * desired_row_height)
+        # Calculate height for Plotly chart: enough space per group of bars + padding for title/labels
+        pixels_per_table_row = 35 # Rough estimate for height needed per table's bar group
+        min_chart_height_for_display = 400 # Minimum height for aesthetic display
+        calculated_chart_height = max(min_chart_height_for_display, len(display_lag_comparison_df) * pixels_per_table_row + 100)
 
 
         # Format lag columns for tooltips
-        display_lag_comparison_df['MEAN_LAG_FMT'] = format_seconds_to_readable(display_lag_comparison_df['MEAN_LAG_SEC'], time_format_option)
-        display_lag_comparison_df['MAX_LAG_FMT'] = format_seconds_to_readable(display_lag_comparison_df['MAXIMUM_LAG_SEC'], time_format_option)
-        display_lag_comparison_df['TARGET_LAG_FMT'] = format_seconds_to_readable(display_lag_comparison_df['TARGET_LAG_SEC'], time_format_option)
+        # These are used in the main dataframe and are NOT part of melted_lag_df's customdata
+        display_lag_comparison_df['TARGET_LAG_SEC_FMT'] = format_seconds_to_readable(display_lag_comparison_df['TARGET_LAG_SEC'], time_format_option)
+        display_lag_comparison_df['MEAN_LAG_SEC_FMT'] = format_seconds_to_readable(display_lag_comparison_df['MEAN_LAG_SEC'], time_format_option)
+        display_lag_comparison_df['MAX_LAG_SEC_FMT'] = format_seconds_to_readable(display_lag_comparison_df['MAXIMUM_LAG_SEC'], time_format_option)
 
+
+        # Melt the dataframe for plotting
         melted_lag_df = display_lag_comparison_df.melt(
             id_vars=['QUALIFIED_NAME', 'DATABASE_NAME', 'SCHEMA_NAME', 'LAST_COMPLETED_REFRESH_STATE'],
             value_vars=['TARGET_LAG_SEC', 'MEAN_LAG_SEC', 'MAXIMUM_LAG_SEC'],
-            var_name='Lag_Type',
+            var_name='Lag_Type_Raw', # Use a raw name
             value_name='Lag_Value_Seconds'
         )
 
-        melted_lag_df['Formatted_Lag_Value'] = format_seconds_to_readable(melted_lag_df['Lag_Value_Seconds'], time_format_option)
+        # Create a more readable 'Lag_Type' column for legend and hover
+        melted_lag_df['Lag_Type'] = melted_lag_df['Lag_Type_Raw'].map({
+            'TARGET_LAG_SEC': 'Target Lag',
+            'MEAN_LAG_SEC': 'Mean Lag',
+            'MAXIMUM_LAG_SEC': 'Max Lag'
+        })
+
+        # Dynamically format the hover value based on selected time format
+        # This column will hold the correctly formatted value for each specific row in melted_lag_df
+        melted_lag_df['Formatted_Hover_Value'] = format_seconds_to_readable(melted_lag_df['Lag_Value_Seconds'], time_format_option)
+
+
+        # Dynamically set the x-axis title based on the selected time format
+        x_axis_title_map = {
+            "seconds": "Lag (seconds)",
+            "minutes": "Lag (minutes)",
+            "hours": "Lag (hours)",
+            "days": "Lag (days)",
+            "mixed": "Lag (Mixed Units)"
+        }
+        current_x_axis_title = x_axis_title_map.get(time_format_option, "Lag")
 
 
         fig_lag_comparison = px.bar(
             melted_lag_df,
-            x='Lag_Value_Seconds',
+            x='Lag_Value_Seconds', # Always plot in seconds for consistent scale
             y='QUALIFIED_NAME',
-            color='Lag_Type',
+            color='Lag_Type', # Use the new readable Lag_Type
             barmode='group',
             orientation='h',
             title='Lag Comparison by Table (Target, Mean, Max)',
-            labels={'Lag_Value_Seconds': 'Lag (seconds)', 'QUALIFIED_NAME': 'Dynamic Table', 'Lag_Type': 'Lag Metric'},
+            labels={'Lag_Value_Seconds': current_x_axis_title, # Dynamic x-axis label
+                    'QUALIFIED_NAME': 'Dynamic Table',
+                    'Lag_Type': 'Lag Metric'}, # Use readable Lag_Type
             color_discrete_map={
-                'TARGET_LAG_SEC': 'lightblue',
-                'MEAN_LAG_SEC': 'darkblue',
-                'MAXIMUM_LAG_SEC': 'orange'
+                'Target Lag': 'lightblue',
+                'Mean Lag': 'darkblue',
+                'Max Lag': 'orange'
             },
-            height=calculated_height # Set a calculated fixed height for scrolling
-            # use_container_width=True # Keep this for horizontal resizing, but might override vertical scrolling if too narrow
+            height=calculated_chart_height
         )
 
         # Ensure vertical order by mean lag
@@ -438,15 +461,18 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
         fig_lag_comparison.update_traces(
             hovertemplate=(
                 '<b>%{y}</b><br>'
-                'Metric: %{full_data.name}<br>'
-                'Value: %{customdata[0]}<br>'
-                'Last Refresh Status: %{customdata[1]}<br>'
-                'Database: %{customdata[2]}<br>'
-                'Schema: %{customdata[3]}<br>'
-                '<extra></extra>'
+                'Metric: %{customdata[0]}<br>' # This now corresponds to 'Lag_Type' in customdata
+                'Value: %{customdata[1]}<br>'  # This now corresponds to 'Formatted_Hover_Value' in customdata
+                'Last Refresh Status: %{customdata[2]}<br>'
+                'Database: %{customdata[3]}<br>'
+                'Schema: %{customdata[4]}<br>'
+                '<extra></extra>' # Hides the default secondary hover info
             ),
+            # customdata must be aligned with the hovertemplate
+            # The order here matters: [0] will be 'Lag_Type', [1] will be 'Formatted_Hover_Value', etc.
             customdata=np.stack((
-                melted_lag_df['Formatted_Lag_Value'],
+                melted_lag_df['Lag_Type'], # Readable metric name
+                melted_lag_df['Formatted_Hover_Value'], # Dynamically formatted value
                 melted_lag_df['LAST_COMPLETED_REFRESH_STATE'],
                 melted_lag_df['DATABASE_NAME'],
                 melted_lag_df['SCHEMA_NAME']
@@ -459,7 +485,34 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
             fig_lag_comparison.update_xaxes(type='log')
             st.info("Logarithmic scale applied to X-axis.", icon="ℹ️")
 
-        st.plotly_chart(fig_lag_comparison, use_container_width=True) # Retained use_container_width=True
+
+        # --- FINAL SCROLL IMPLEMENTATION FOR LAG COMPARISON CHART ---
+        chart_html_string = fig_lag_comparison.to_html(
+            full_html=False,
+            include_plotlyjs='cdn',
+            default_width='100%',
+            default_height=calculated_chart_height
+        )
+
+        streamlit_component_height = min(calculated_chart_height + 50, 650) # Cap iframe height for Streamlit
+
+        components.html(
+            f"""
+            <div style="max-height: 600px; overflow-y: scroll; border: 1px solid #e0e0e0; padding: 5px;">
+                {chart_html_string}
+            </div>
+            """,
+            height=streamlit_component_height,
+            scrolling=False
+        )
+
+        # Provide a clear instruction to the user
+        if calculated_chart_height > 600:
+            st.info("Use the scrollbar on the right side of the chart to view all tables.", icon="💡")
+        elif len(display_lag_comparison_df) > 10:
+            st.info("Tip: You can also click and drag (pan) within the chart area to navigate.", icon="💡")
+
+
     else:
         st.info("No lag comparison data to display for selected filters.", icon="ℹ️")
 
