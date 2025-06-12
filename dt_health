@@ -354,11 +354,11 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
             y='Count',
             title='Time Within Target Lag Ratio Distribution',
             labels={'Ratio_Range': 'Ratio (%)', 'Count': 'Number of DTs'},
-            text='Count' # ADDED: This tells Plotly to use the 'Count' column for text labels on bars
+            text='Count'
         )
         fig_lag_ratio_hist.update_layout(bargap=0.1)
         fig_lag_ratio_hist.update_xaxes(categoryorder='array', categoryarray=labels)
-        fig_lag_ratio_hist.update_traces(textposition='outside') # Make sure text is visible outside the bars
+        fig_lag_ratio_hist.update_traces(textposition='outside')
 
         st.plotly_chart(fig_lag_ratio_hist, use_container_width=True)
     else:
@@ -381,33 +381,34 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
         num_tables_lag_comparison = st.slider(
             "Show Top N Tables for Lag Comparison:",
             min_value=5,
-            max_value=len(lag_comparison_df), # Max value should be the actual number of filtered tables
-            value=min(15, len(lag_comparison_df)), # A reasonable default, adjusts if fewer tables
+            max_value=len(lag_comparison_df),
+            value=min(15, len(lag_comparison_df)),
             step=1,
             key="lag_comparison_slider_dt_health"
         )
         st.write(f"Displaying the top {num_tables_lag_comparison} tables by mean lag.")
 
-        display_lag_comparison_df = lag_comparison_df.head(num_tables_lag_comparison)
+        display_lag_comparison_df = lag_comparison_df.head(num_tables_lag_comparison).copy() # Added .copy() here
 
-        # Calculate height for Plotly chart: enough space per group of bars + padding for title/labels
-        pixels_per_table_row = 35 # Rough estimate for height needed per table's bar group
-        min_chart_height_for_display = 400 # Minimum height for aesthetic display
-        calculated_chart_height = max(min_chart_height_for_display, len(display_lag_comparison_df) * pixels_per_table_row + 100)
+        # Format ALL lag columns for tooltip before melting
+        display_lag_comparison_df['TARGET_LAG_FMT'] = format_seconds_to_readable(display_lag_comparison_df['TARGET_LAG_SEC'], time_format_option)
+        display_lag_comparison_df['MEAN_LAG_FMT'] = format_seconds_to_readable(display_lag_comparison_df['MEAN_LAG_SEC'], time_format_option)
+        display_lag_comparison_df['MAX_LAG_FMT'] = format_seconds_to_readable(display_lag_comparison_df['MAXIMUM_LAG_SEC'], time_format_option)
 
 
-        # Format lag columns for tooltips
-        # These are used in the main dataframe and are NOT part of melted_lag_df's customdata
-        display_lag_comparison_df['TARGET_LAG_SEC_FMT'] = format_seconds_to_readable(display_lag_comparison_df['TARGET_LAG_SEC'], time_format_option)
-        display_lag_comparison_df['MEAN_LAG_SEC_FMT'] = format_seconds_to_readable(display_lag_comparison_df['MEAN_LAG_SEC'], time_format_option)
-        display_lag_comparison_df['MAX_LAG_SEC_FMT'] = format_seconds_to_readable(display_lag_comparison_df['MAXIMUM_LAG_SEC'], time_format_option)
+        # Create a new column 'TABLE_DISPLAY_NAME' for simplified Y-axis labels
+        # This prevents the long qualified names from cluttering the Y-axis
+        display_lag_comparison_df['TABLE_DISPLAY_NAME'] = display_lag_comparison_df['TABLE_NAME']
 
 
         # Melt the dataframe for plotting
+        # Include all formatted lag columns and other relevant metadata in id_vars
         melted_lag_df = display_lag_comparison_df.melt(
-            id_vars=['QUALIFIED_NAME', 'DATABASE_NAME', 'SCHEMA_NAME', 'LAST_COMPLETED_REFRESH_STATE'],
+            id_vars=['QUALIFIED_NAME', 'TABLE_DISPLAY_NAME', 'DATABASE_NAME', 'SCHEMA_NAME',
+                     'LAST_COMPLETED_REFRESH_STATE',
+                     'TARGET_LAG_FMT', 'MEAN_LAG_FMT', 'MAX_LAG_FMT'], # Include formatted values
             value_vars=['TARGET_LAG_SEC', 'MEAN_LAG_SEC', 'MAXIMUM_LAG_SEC'],
-            var_name='Lag_Type_Raw', # Use a raw name
+            var_name='Lag_Type_Raw',
             value_name='Lag_Value_Seconds'
         )
 
@@ -417,11 +418,6 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
             'MEAN_LAG_SEC': 'Mean Lag',
             'MAXIMUM_LAG_SEC': 'Max Lag'
         })
-
-        # Dynamically format the hover value based on selected time format
-        # This column will hold the correctly formatted value for each specific row in melted_lag_df
-        melted_lag_df['Formatted_Hover_Value'] = format_seconds_to_readable(melted_lag_df['Lag_Value_Seconds'], time_format_option)
-
 
         # Dynamically set the x-axis title based on the selected time format
         x_axis_title_map = {
@@ -433,18 +429,23 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
         }
         current_x_axis_title = x_axis_title_map.get(time_format_option, "Lag")
 
+        # Calculate height for Plotly chart: enough space per group of bars + padding for title/labels
+        pixels_per_table_row = 35
+        min_chart_height_for_display = 400
+        calculated_chart_height = max(min_chart_height_for_display, len(display_lag_comparison_df) * pixels_per_table_row + 100)
+
 
         fig_lag_comparison = px.bar(
             melted_lag_df,
-            x='Lag_Value_Seconds', # Always plot in seconds for consistent scale
-            y='QUALIFIED_NAME',
-            color='Lag_Type', # Use the new readable Lag_Type
+            x='Lag_Value_Seconds',
+            y='TABLE_DISPLAY_NAME', # Use the simpler table name for y-axis
+            color='Lag_Type',
             barmode='group',
             orientation='h',
             title='Lag Comparison by Table (Target, Mean, Max)',
-            labels={'Lag_Value_Seconds': current_x_axis_title, # Dynamic x-axis label
-                    'QUALIFIED_NAME': 'Dynamic Table',
-                    'Lag_Type': 'Lag Metric'}, # Use readable Lag_Type
+            labels={'Lag_Value_Seconds': current_x_axis_title,
+                    'TABLE_DISPLAY_NAME': 'Table Name', # Updated y-axis label
+                    'Lag_Type': 'Lag Metric'},
             color_discrete_map={
                 'Target Lag': 'lightblue',
                 'Mean Lag': 'darkblue',
@@ -453,31 +454,74 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
             height=calculated_chart_height
         )
 
-        # Ensure vertical order by mean lag
-        unique_qualified_names_for_sort = display_lag_comparison_df['QUALIFIED_NAME'].tolist()
-        fig_lag_comparison.update_yaxes(categoryorder='array', categoryarray=unique_qualified_names_for_sort)
+        # Ensure vertical order by mean lag (using original QUALIFIED_NAME for sorting consistency)
+        fig_lag_comparison.update_yaxes(categoryorder='array', categoryarray=display_lag_comparison_df['TABLE_DISPLAY_NAME'].tolist())
 
-        # Custom hover template for detailed info
+
+        # --- Custom Hovertemplate (Single Hover Displaying All) ---
+        # Plotly's default hover for barmode='group' highlights only the hovered bar.
+        # To show a "group hover", we need to use customdata intelligently.
+        # However, a single hover *per trace* can only display information for that trace.
+        # To get one consolidated hover for ALL three bars of a table,
+        # you typically need to use 'layout.hovermode = "y unified"'.
+        # This unifies hovers across all traces at the same y-coordinate.
+        fig_lag_comparison.update_layout(hovermode="y unified")
+
+        # Now, define the customdata to carry all values for the *unified hover*
+        # The customdata needs to be available in the melted_lag_df
+        # Order matters for customdata index access: [0] db, [1] schema, [2] refresh, [3] target_fmt, [4] mean_fmt, [5] max_fmt
+        customdata_columns = ['DATABASE_NAME', 'SCHEMA_NAME', 'LAST_COMPLETED_REFRESH_STATE',
+                              'TARGET_LAG_FMT', 'MEAN_LAG_FMT', 'MAX_LAG_FMT']
+        melted_lag_df_for_customdata = melted_lag_df[customdata_columns].fillna('N/A')
+
+        # Since hovermode="y unified" means the hover is tied to the y-axis (table),
+        # we need to provide the customdata that is consistent for each table across its bars.
+        # We can map these values back from the original display_lag_comparison_df
+        # This will attach the full table info to each point.
+        # Re-stacking the full context once based on QUALIFIED_NAME
+        unique_qualified_names = display_lag_comparison_df['QUALIFIED_NAME'].unique()
+        customdata_all_tables = []
+        for q_name in unique_qualified_names:
+            table_row = display_lag_comparison_df[display_lag_comparison_df['QUALIFIED_NAME'] == q_name].iloc[0]
+            customdata_all_tables.append([
+                table_row['DATABASE_NAME'],
+                table_row['SCHEMA_NAME'],
+                table_row['LAST_COMPLETED_REFRESH_STATE'],
+                table_row['TARGET_LAG_FMT'],
+                table_row['MEAN_LAG_FMT'],
+                table_row['MAX_LAG_FMT']
+            ])
+
+        # Apply this customdata to all traces. Plotly's unified hover will then pick this up.
+        # Each trace will have the same customdata for points with the same Y-value.
         fig_lag_comparison.update_traces(
             hovertemplate=(
-                '<b>%{y}</b><br>'
-                'Metric: %{customdata[0]}<br>' # This now corresponds to 'Lag_Type' in customdata
-                'Value: %{customdata[1]}<br>'  # This now corresponds to 'Formatted_Hover_Value' in customdata
+                '<b>Table: %{y}</b><br>'
+                'Database: %{customdata[0]}<br>'
+                'Schema: %{customdata[1]}<br>'
                 'Last Refresh Status: %{customdata[2]}<br>'
-                'Database: %{customdata[3]}<br>'
-                'Schema: %{customdata[4]}<br>'
-                '<extra></extra>' # Hides the default secondary hover info
+                '<br>'
+                '<b>Target Lag:</b> %{customdata[3]}<br>'
+                '<b>Mean Lag:</b> %{customdata[4]}<br>'
+                '<b>Max Lag:</b> %{customdata[5]}<br>'
+                '<extra></extra>' # This is important to hide the default trace name/value
             ),
-            # customdata must be aligned with the hovertemplate
-            # The order here matters: [0] will be 'Lag_Type', [1] will be 'Formatted_Hover_Value', etc.
+            # Map customdata by QUALIFIED_NAME (which corresponds to y-axis for 'TABLE_DISPLAY_NAME')
+            # This is complex because melted_lag_df repeats rows. Need a way to ensure the full set of
+            # customdata for a given table is associated with ALL its melted rows.
+            # A simpler way is to make 'hovertemplate' tied to the y-axis (`y unified`), and then
+            # ensure that the relevant full table data for *that y-value* is accessible.
+            # `melted_lag_df` contains all these values, so we can pass them directly.
             customdata=np.stack((
-                melted_lag_df['Lag_Type'], # Readable metric name
-                melted_lag_df['Formatted_Hover_Value'], # Dynamically formatted value
-                melted_lag_df['LAST_COMPLETED_REFRESH_STATE'],
                 melted_lag_df['DATABASE_NAME'],
-                melted_lag_df['SCHEMA_NAME']
+                melted_lag_df['SCHEMA_NAME'],
+                melted_lag_df['LAST_COMPLETED_REFRESH_STATE'],
+                melted_lag_df['TARGET_LAG_FMT'], # Formatted Target Lag
+                melted_lag_df['MEAN_LAG_FMT'],   # Formatted Mean Lag
+                melted_lag_df['MAX_LAG_FMT']     # Formatted Max Lag
             ), axis=-1)
         )
+
 
         # Log scale option for this chart
         use_log_scale_lag_comparison = st.checkbox("Log Scale X-axis (Lag Comparison)", key="log_scale_lag_comparison_dt_health")
