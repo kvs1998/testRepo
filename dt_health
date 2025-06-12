@@ -381,8 +381,8 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
         num_tables_lag_comparison = st.slider(
             "Show Top N Tables for Lag Comparison:",
             min_value=5,
-            max_value=len(lag_comparison_df), # Max value should be the actual number of filtered tables
-            value=min(15, len(lag_comparison_df)), # A reasonable default, adjusts if fewer tables
+            max_value=len(lag_comparison_df),
+            value=min(15, len(lag_comparison_df)),
             step=1,
             key="lag_comparison_slider_dt_health"
         )
@@ -397,27 +397,7 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
 
 
         # Create a new column 'TABLE_DISPLAY_NAME' for simplified Y-axis labels
-        # Use regex to extract the most meaningful part of the QUALIFIED_NAME for display
-        def get_display_name(qualified_name, table_name):
-            # This is a heuristic, adjust as needed.
-            # Tries to get the schema.table name or just table name if qualified is too long
-            parts = qualified_name.split('.')
-            if len(parts) >= 3:
-                return f"{parts[-2]}.{parts[-1]}" # Schema.Table
-            elif len(parts) == 2:
-                return f"{parts[-1]}" # Just table name
-            return table_name # Fallback to original table_name
-
-
-        display_lag_comparison_df['TABLE_DISPLAY_NAME'] = display_lag_comparison_df.apply(
-            lambda row: get_display_name(row['QUALIFIED_NAME'], row['TABLE_NAME']), axis=1
-        )
-        
-        # Ensure display name is not too long, truncate if necessary for readability
-        max_y_label_len = 30 # Adjust as needed
-        display_lag_comparison_df['TABLE_DISPLAY_NAME'] = display_lag_comparison_df['TABLE_DISPLAY_NAME'].apply(
-            lambda x: x if len(x) <= max_y_label_len else x[:max_y_label_len-3] + '...'
-        )
+        display_lag_comparison_df['TABLE_DISPLAY_NAME'] = display_lag_comparison_df['TABLE_NAME']
 
 
         # Melt the dataframe for plotting
@@ -477,22 +457,25 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
 
 
         # --- Custom Hovertemplate (Single Hover Displaying All) ---
+        # The 'y unified' hovermode is key for showing a single tooltip per table.
         fig_lag_comparison.update_layout(hovermode="y unified")
 
         fig_lag_comparison.update_traces(
             hovertemplate=(
-                '<b>Table: %{customdata[0]}</b><br>' # Use QUALIFIED_NAME for full table context on hover
-                'Database: %{customdata[1]}<br>'
-                'Schema: %{customdata[2]}<br>'
-                'Last Refresh Status: %{customdata[3]}<br>'
+                '<b>Table: %{y}</b><br>'
+                'Database: %{customdata[0]}<br>'
+                'Schema: %{customdata[1]}<br>'
+                'Last Refresh Status: %{customdata[2]}<br>'
                 '<br>'
-                '<b>Target Lag:</b> %{customdata[4]}<br>'
-                '<b>Mean Lag:</b> %{customdata[5]}<br>'
-                '<b>Max Lag:</b> %{customdata[6]}<br>'
+                '<b>Target Lag:</b> %{customdata[3]}<br>'
+                '<b>Mean Lag:</b> %{customdata[4]}<br>'
+                '<b>Max Lag:</b> %{customdata[5]}<br>'
                 '<extra></extra>' # Hides the default secondary hover info (trace name, value)
             ),
+            # customdata must contain the common info for each table,
+            # and the *formatted* lag values for each type, repeated for each trace of the table.
+            # Plotly's 'y unified' hovermode will pick the first one and show it.
             customdata=np.stack((
-                melted_lag_df['QUALIFIED_NAME'], # Full qualified name
                 melted_lag_df['DATABASE_NAME'],
                 melted_lag_df['SCHEMA_NAME'],
                 melted_lag_df['LAST_COMPLETED_REFRESH_STATE'],
@@ -501,6 +484,7 @@ def render_dt_health_tab(metadata_df: pd.DataFrame):
                 melted_lag_df['MAX_LAG_FMT']     # Formatted Max Lag
             ), axis=-1)
         )
+
 
         # Log scale option for this chart
         use_log_scale_lag_comparison = st.checkbox("Log Scale X-axis (Lag Comparison)", key="log_scale_lag_comparison_dt_health")
