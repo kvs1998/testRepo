@@ -122,28 +122,43 @@ def render_dt_state_tab(history_df: pd.DataFrame):
         min_data_date = history_df['DATA_TIMESTAMP_DT'].min().date()
         max_data_date = history_df['DATA_TIMESTAMP_DT'].max().date()
         
-        # Default value should be a tuple (start_date, end_date)
-        # If no data or single day, ensure it doesn't break
-        default_start_date = min_data_date
-        default_end_date = max_data_date
+        # Determine initial value for date_input. If only one date in history, set value to (date, date)
+        if min_data_date == max_data_date:
+            initial_date_value = datetime(min_data_date.year, min_data_date.month, min_data_date.day).date()
+            initial_date_tuple = (initial_date_value, initial_date_value)
+        else:
+            initial_date_tuple = (min_data_date, max_data_date)
 
-        # This widget can return a tuple (range) or a single date object
+
+        # Use None as default for part of the tuple if user should be able to pick open-ended ranges
+        # Streamlit date_input with a range (tuple) can return (date, date), (date, None), (None, date)
         selected_date_input = st.date_input(
             "Select Date Range for History:",
-            value=(default_start_date, default_end_date),
+            value=initial_date_tuple,
             min_value=min_data_date,
             max_value=max_data_date,
             key="date_range_dt_state"
         )
         
         # Parse the output from st.date_input to determine start_date_filter and end_date_filter
-        if isinstance(selected_date_input, tuple) and len(selected_date_input) == 2:
-            start_date_filter = pd.to_datetime(selected_date_input[0]).normalize() # Start of first selected day
-            end_date_filter = pd.to_datetime(selected_date_input[1]).normalize() + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1) # End of last selected day
+        start_date_filter = None
+        end_date_filter = None
+
+        if isinstance(selected_date_input, tuple):
+            # Handles (date1, date2), (date, None), (None, date)
+            if selected_date_input[0] is not None:
+                start_date_filter = pd.to_datetime(selected_date_input[0]).normalize()
+            else: # If user deletes the start date, default to min data date
+                start_date_filter = history_df['DATA_TIMESTAMP_DT'].min().normalize()
+
+            if selected_date_input[1] is not None:
+                end_date_filter = pd.to_datetime(selected_date_input[1]).normalize() + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1)
+            else: # If user deletes the end date, default to max data date
+                end_date_filter = history_df['DATA_TIMESTAMP_DT'].max().normalize() + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1)
         elif isinstance(selected_date_input, (datetime.date, datetime)): # Single date selected
             start_date_filter = pd.to_datetime(selected_date_input).normalize()
             end_date_filter = pd.to_datetime(selected_date_input).normalize() + pd.Timedelta(days=1) - pd.Timedelta(microseconds=1)
-        else: # Fallback if input is weird, e.g., only one date selected by user then deleted one
+        else: # Fallback if input is something unexpected
             start_date_filter = history_df['DATA_TIMESTAMP_DT'].min()
             end_date_filter = history_df['DATA_TIMESTAMP_DT'].max()
 
@@ -226,9 +241,7 @@ def render_dt_state_tab(history_df: pd.DataFrame):
 
             use_log_scale_refresh_status = st.checkbox("Log Scale Y-axis (Refresh Status Trend)", key="log_scale_refresh_status_dt_state")
             if use_log_scale_refresh_status:
-                # Add a small offset to zero counts for log scale
                 fig_status_trend.update_yaxes(type='log', title='Count (Log Scale)', rangemode='tozero')
-                # For stacked bar charts, Plotly handles zeroes reasonably well with rangemode='tozero'.
                 st.info("Logarithmic scale applied to Y-axis. Zero counts are handled gracefully.", icon="ℹ️")
 
             st.plotly_chart(fig_status_trend, use_container_width=True)
@@ -255,7 +268,7 @@ def render_dt_state_tab(history_df: pd.DataFrame):
 
     st.divider()
 
-    # --- Row Changes Over Time ---
+    # --- Row Changes Over Time (Line/Area Chart) ---
     st.subheader("Row Changes Over Time")
     st.write("Trend of inserted, deleted, copied, added partitions, and removed partitions over time.")
 
@@ -268,22 +281,18 @@ def render_dt_state_tab(history_df: pd.DataFrame):
         'NUMREMOVEDPARTITIONS': 'Removed Partitions'
     }
 
-    # Filter for columns that actually exist in the DataFrame
     available_row_trend_cols = [col for col in row_change_trend_cols_raw if col in filtered_history_df.columns]
 
     if available_row_trend_cols and not filtered_history_df.empty:
-        # Aggregate daily sum for each row change metric
         row_trend_df = filtered_history_df.groupby(pd.Grouper(key='DATA_TIMESTAMP_DT', freq='D'))[available_row_trend_cols].sum().reset_index()
         row_trend_df.rename(columns={'DATA_TIMESTAMP_DT': 'Date'}, inplace=True)
 
-        # Melt for stacked area chart
         row_trend_melted = row_trend_df.melt(
             id_vars=['Date'],
             value_vars=available_row_trend_cols,
             var_name='Row_Metric_Raw',
             value_name='Count'
         )
-        # Map raw column names to display names
         row_trend_melted['Row_Metric'] = row_trend_melted['Row_Metric_Raw'].map(row_change_trend_cols_display_map)
 
         fig_row_trend = px.area(
@@ -294,7 +303,7 @@ def render_dt_state_tab(history_df: pd.DataFrame):
             title='Daily Row Changes Over Time',
             labels={'Count': 'Number of Rows/Partitions', 'Row_Metric': 'Change Type'}
         )
-        fig_row_trend.update_layout(hovermode="x unified") # Unified hover for daily totals
+        fig_row_trend.update_layout(hovermode="x unified")
 
         use_log_scale_row_trend = st.checkbox("Log Scale Y-axis (Row Changes Trend)", key="log_scale_row_changes_trend_dt_state")
         if use_log_scale_row_trend:
@@ -342,7 +351,6 @@ def render_dt_state_tab(history_df: pd.DataFrame):
         st.markdown("<p style='font-size:16px;'><b>Refresh Duration vs. Rows Processed</b></p>", unsafe_allow_html=True)
         st.write("Examine if duration correlates with data volume.")
         
-        # Define all possible row change columns from DDL for selection
         all_row_metrics_scatter = {
             'Total Rows Changed': ['NUMINSERTEDROWS', 'NUMDELETEDROWS', 'NUMCOPIEDROWS', 'NUMADDEDPARTITIONS', 'NUMREMOVEDPARTITIONS'],
             'Inserted Rows': ['NUMINSERTEDROWS'],
@@ -352,7 +360,6 @@ def render_dt_state_tab(history_df: pd.DataFrame):
             'Removed Partitions': ['NUMREMOVEDPARTITIONS']
         }
         
-        # Filter for metrics where all underlying columns are present in the dataframe
         available_row_metrics_scatter = {
             label: cols for label, cols in all_row_metrics_scatter.items()
             if all(c in filtered_history_df.columns for c in cols)
@@ -372,10 +379,16 @@ def render_dt_state_tab(history_df: pd.DataFrame):
             scatter_df = scatter_df.dropna(subset=['REFRESH_DURATION_SEC', 'X_AXIS_METRIC_VALUE']).copy()
             
             # Remove points where either X or Y is zero if log scale might be applied
-            scatter_df = scatter_df[
-                (scatter_df['REFRESH_DURATION_SEC'] > 0) &
-                (scatter_df['X_AXIS_METRIC_VALUE'] > 0)
-            ].copy()
+            # This needs to be done *before* plotting
+            current_log_x = st.session_state.get("log_x_scatter_dt_state", False)
+            current_log_y = st.session_state.get("log_y_scatter_dt_state", False)
+
+            if current_log_x or current_log_y:
+                scatter_df = scatter_df[
+                    (scatter_df['REFRESH_DURATION_SEC'] > 0) &
+                    (scatter_df['X_AXIS_METRIC_VALUE'] > 0)
+                ].copy() # Exclude zeros for log scale
+
 
             if not scatter_df.empty:
                 # Format timestamps and duration for hover text
@@ -384,48 +397,65 @@ def render_dt_state_tab(history_df: pd.DataFrame):
                 scatter_df['REFRESH_DURATION_FMT_HOVER'] = format_seconds_to_readable(scatter_df['REFRESH_DURATION_SEC'], time_format_option)
                 scatter_df['X_AXIS_METRIC_FMT_HOVER'] = scatter_df['X_AXIS_METRIC_VALUE'].apply(lambda x: f"{int(x):,}")
 
+
                 fig_duration_vs_rows = px.scatter(
                     scatter_df,
                     x='X_AXIS_METRIC_VALUE',
                     y='REFRESH_DURATION_SEC',
-                    color='STATE',
-                    hover_name='QUALIFIED_NAME',
+                    color='STATE', # Color by refresh state
+                    # Use 'QUALIFIED_NAME' and 'STATE' directly in customdata for full control
+                    # hover_name will not be used to avoid potential conflicts/formatting issues
+                    # hover_data is used to pass additional columns not directly used as x/y/color
+                    hover_data={
+                        'REFRESH_ACTION': True,
+                        'REFRESH_START_TIME_DT': False, # Will use formatted version in customdata
+                        'REFRESH_END_TIME_DT': False, # Will use formatted version in customdata
+                        'STATE_MESSAGE': True,
+                        'QUALIFIED_NAME': False, # Use customdata for formatted qualified name
+                        'STATE': False # Use customdata for formatted state
+                    },
                     title=f'Refresh Duration vs. {selected_row_metric_for_scatter}',
                     labels={
                         'REFRESH_DURATION_SEC': 'Duration (seconds)',
                         'X_AXIS_METRIC_VALUE': selected_row_metric_for_scatter
+                    },
+                    color_discrete_map={ # Explicitly map colors for consistency
+                        'SUCCEEDED': 'blue', 'FAILED': 'red', 'UPSTREAM_FAILED': 'darkred',
+                        'CANCELLED': 'orange', 'EXECUTING': 'green', 'SCHEDULED': 'grey', 'UNKNOWN': 'purple'
                     }
                 )
 
                 # Custom hovertemplate for scatter plot
                 fig_duration_vs_rows.update_traces(
                     hovertemplate=(
-                        '<b>Table: %{hover_name}</b><br>'
-                        'State: %{marker.color}<br>' # This correctly gets the state string from color mapping
-                        f'{selected_row_metric_for_scatter}: %{{customdata[0]}}<br>' # Corrected customdata index
-                        'Duration: %{customdata[1]}<br>' # Corrected customdata index
-                        'Action: %{customdata[2]}<br>'
-                        'Start: %{customdata[3]}<br>'
-                        'End: %{customdata[4]}<br>'
-                        'Message: %{customdata[5]}<br>'
-                        '<extra></extra>'
+                        '<b>Table: %{customdata[0]}</b><br>' # QUALIFIED_NAME from customdata
+                        'State: %{customdata[1]}<br>'       # STATE from customdata
+                        f'{selected_row_metric_for_scatter}: %{{customdata[2]}}<br>'
+                        'Duration: %{customdata[3]}<br>'
+                        'Action: %{customdata[4]}<br>'
+                        'Start: %{customdata[5]}<br>'
+                        'End: %{customdata[6]}<br>'
+                        'Message: %{customdata[7]}<br>'
+                        '<extra></extra>' # Hides the default secondary hover info
                     ),
                     customdata=np.stack((
-                        scatter_df['X_AXIS_METRIC_FMT_HOVER'],
-                        scatter_df['REFRESH_DURATION_FMT_HOVER'],
-                        scatter_df['REFRESH_ACTION'],
-                        scatter_df['REFRESH_START_TIME_FMT'],
-                        scatter_df['REFRESH_END_TIME_FMT'],
-                        scatter_df['STATE_MESSAGE']
+                        scatter_df['QUALIFIED_NAME'], # Index 0
+                        scatter_df['STATE'],          # Index 1 (Use raw state string here)
+                        scatter_df['X_AXIS_METRIC_FMT_HOVER'], # Index 2
+                        scatter_df['REFRESH_DURATION_FMT_HOVER'], # Index 3
+                        scatter_df['REFRESH_ACTION'], # Index 4
+                        scatter_df['REFRESH_START_TIME_FMT'], # Index 5
+                        scatter_df['REFRESH_END_TIME_FMT'], # Index 6
+                        scatter_df['STATE_MESSAGE'] # Index 7
                     ), axis=-1)
                 )
 
-                # Log scale checkboxes (repositioned)
+                # Log scale checkboxes (repositioned to right of each other)
                 col_scatter_log1, col_scatter_log2 = st.columns(2)
                 with col_scatter_log1:
-                    log_x_scatter = st.checkbox("Log Scale X-axis (Rows Processed)", key="log_x_scatter_dt_state")
+                    log_x_scatter = st.checkbox("Log Scale X-axis (Rows Processed)", value=current_log_x, key="log_x_scatter_dt_state")
                 with col_scatter_log2:
-                    log_y_scatter = st.checkbox("Log Scale Y-axis (Duration Scatter)", key="log_y_scatter_dt_state")
+                    log_y_scatter = st.checkbox("Log Scale Y-axis (Duration Scatter)", value=current_log_y, key="log_y_scatter_dt_state")
 
                 if log_x_scatter:
                     fig_duration_vs_rows.update_xaxes(type='log')
@@ -451,7 +481,6 @@ def render_dt_state_tab(history_df: pd.DataFrame):
         if 'REFRESH_DURATION_SEC' in filtered_history_df.columns and not filtered_history_df['REFRESH_DURATION_SEC'].empty:
             duration_data = filtered_history_df['REFRESH_DURATION_SEC'].dropna().copy()
             
-            # Max duration for slider/histogram range
             max_duration = duration_data.max() if not duration_data.empty else 60
 
             duration_max_limit_sec = st.slider(
@@ -464,10 +493,10 @@ def render_dt_state_tab(history_df: pd.DataFrame):
                 key="duration_hist_limit"
             )
 
-            # Filter data for histogram based on slider limit
             duration_data_for_hist = duration_data[duration_data <= duration_max_limit_sec].copy()
             
             # Ensure no zero values if log scale is to be applied, replace with tiny positive
+            # This check must happen AFTER slider selection, before plotting
             if st.session_state.get("log_scale_duration_hist_dt_state", False):
                  duration_data_for_hist = duration_data_for_hist.apply(lambda x: x if x > 0 else 1e-9)
 
@@ -490,34 +519,35 @@ def render_dt_state_tab(history_df: pd.DataFrame):
                 
                 # Dynamic x-axis tick formatting based on selected time format
                 if time_format_option != 'seconds': # Custom formatting for non-seconds
-                    # Create custom tick text based on conversion for the main axis
-                    # Need to determine appropriate tick values for conversion to avoid cluttered axis
-                    # Example: generate 5 ticks between min and max duration
-                    if fig_duration_hist.layout.xaxis.range:
-                        # Get actual range if chart is already drawn
-                        min_x_val = fig_duration_hist.layout.xaxis.range[0]
-                        max_x_val = fig_duration_hist.layout.xaxis.range[1]
-                    else:
-                        min_x_val = duration_data_for_hist.min()
-                        max_x_val = duration_data_for_hist.max()
+                    # Use a rough number of ticks to ensure readability. Adjust based on expected max duration.
+                    max_x_val = fig_duration_hist.layout.xaxis.range[1] if fig_duration_hist.layout.xaxis.range else duration_data_for_hist.max()
+                    min_x_val = fig_duration_hist.layout.xaxis.range[0] if fig_duration_hist.layout.xaxis.range else duration_data_for_hist.min()
                     
-                    if min_x_val < 1e-9: # Handle very small numbers for log scale
-                        min_x_val = 1.0 # Or some appropriate minimum for visualization
-                    
-                    # For log scale, ticks should be powers of 10 or similar.
-                    # For linear, just simple linspace.
-                    # This logic assumes linear range unless log is active.
-                    if use_log_scale_duration_hist:
-                        # For log scale, Plotly usually handles tick text well for common log bases.
-                        # If needed, manually calculate log ticks here.
-                        pass # Rely on Plotly's default log tick text
-                    else:
-                        # For linear, use linspace and format
-                        num_ticks = 5
-                        if max_x_val > 0 and num_ticks > 0: # Avoid division by zero or too many ticks
+                    if min_x_val < 1e-9 and use_log_scale_duration_hist:
+                        min_x_val = 1 # Prevent issues with log(0) for tick generation
+
+                    if max_x_val > 0:
+                        # For linear scale, use a reasonable number of linear ticks
+                        if not use_log_scale_duration_hist:
+                            num_ticks = 5 # Adjust number of ticks as needed
                             tick_values = np.linspace(min_x_val, max_x_val, num_ticks)
-                            tick_texts = format_seconds_to_readable(pd.Series(tick_values), time_format_option).tolist()
-                            fig_duration_hist.update_xaxes(tickvals=tick_values, ticktext=tick_texts)
+                        else:
+                            # For log scale, generate ticks at powers of 10 for better readability
+                            # Or rely on Plotly's intelligent log ticks if the range is small.
+                            # Here, manual powers of 10 for explicit control.
+                            if max_x_val > 0:
+                                log_min = np.floor(np.log10(min_x_val)) if min_x_val > 0 else 0
+                                log_max = np.ceil(np.log10(max_x_val))
+                                tick_values = np.logspace(log_min, log_max, int(log_max - log_min) + 1)
+                                tick_values = tick_values[(tick_values >= min_x_val) & (tick_values <= max_x_val)]
+                                if not tick_values.size: # Fallback if no ticks generated
+                                    tick_values = np.linspace(min_x_val, max_x_val, 3)
+
+                            else:
+                                tick_values = [0, 1] # Fallback if max_x_val is zero
+                            
+                        tick_texts = format_seconds_to_readable(pd.Series(tick_values), time_format_option).tolist()
+                        fig_duration_hist.update_xaxes(tickvals=tick_values, ticktext=tick_texts)
                             
                 st.plotly_chart(fig_duration_hist, use_container_width=True)
             else:
@@ -531,7 +561,6 @@ def render_dt_state_tab(history_df: pd.DataFrame):
         st.write("Total inserted, deleted, and copied rows per refresh action.")
         row_change_analysis_cols = ['NUMINSERTEDROWS', 'NUMDELETEDROWS', 'NUMCOPIEDROWS', 'NUMADDEDPARTITIONS', 'NUMREMOVEDPARTITIONS']
         
-        # Filter for columns that actually exist in the DataFrame
         available_row_analysis_cols = [col for col in row_change_analysis_cols if col in filtered_history_df.columns]
 
         if available_row_analysis_cols and not filtered_history_df.empty:
@@ -712,7 +741,7 @@ def render_dt_state_tab(history_df: pd.DataFrame):
         display_cols_longest = [
             'QUALIFIED_NAME', 'REFRESH_DURATION_FMT', 'REFRESH_ACTION', 'REFRESH_TRIGGER',
             'REFRESH_START_TIME_DT', 'REFRESH_END_TIME_DT',
-            'NUMINSERTEDROWS', 'NUMDELETEDROWS', 'NUMCOPIEDROWS', 'NUMADDEDPARTITIONS', 'NUMREMOVEDPARTITIONS' # Added these
+            'NUMINSERTEDROWS', 'NUMDELETEDROWS', 'NUMCOPIEDROWS', 'NUMADDEDPARTITIONS', 'NUMREMOVEDPARTITIONS'
         ]
 
         display_labels_longest = {
@@ -750,13 +779,12 @@ def render_dt_state_tab(history_df: pd.DataFrame):
     if not failure_patterns_df.empty:
         # Group by STATE_CODE and STATE_MESSAGE, count occurrences, and get the last occurrence time
         failure_summary = failure_patterns_df.groupby(['STATE_CODE', 'STATE_MESSAGE']).agg(
-            Occurrence_Count=('STATE_CODE', 'size'), # Count occurrences
-            Last_Occurred_Time=('DATA_TIMESTAMP_DT', 'max') # Get latest timestamp
+            Occurrence_Count=('STATE_CODE', 'size'),
+            Last_Occurred_Time=('DATA_TIMESTAMP_DT', 'max')
         ).reset_index()
         
         failure_summary = failure_summary.sort_values('Occurrence_Count', ascending=False)
 
-        # Select columns and rename for display
         display_cols_failure = ['STATE_CODE', 'STATE_MESSAGE', 'Occurrence_Count', 'Last_Occurred_Time']
         display_labels_failure = {
             'STATE_CODE': 'Error Code',
