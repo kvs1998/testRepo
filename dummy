@@ -37,45 +37,30 @@ with chart_cols_pair3[0]:  # Refresh Duration Distribution (Histogram)
                 )
                 fig_duration_hist.update_layout(bargap=0.1, title_text="")
 
-                # --- START: DEFINITIVE FIX ---
-                # Build a dictionary of updates to apply in a single call
-                xaxis_updates = {}
-
+                # --- START: FINAL ROBUST FIX ---
                 if use_log_scale_duration_hist:
-                    xaxis_updates["type"] = "log"
+                    # When using log scale, let Plotly handle the axis automatically.
+                    # It does a great job with log axes by default.
+                    fig_duration_hist.update_xaxes(type="log")
                     st.info(
                         "Logarithmic scale applied to X-axis. Zero durations are excluded.",
                         icon="ℹ️",
                     )
-
-                if time_format_option != "seconds":
+                elif time_format_option != "seconds":
+                    # ONLY apply custom ticks if NOT using log scale.
                     min_x_val = duration_data.min()
                     max_x_val = duration_data.max()
-
                     if max_x_val > 0:
-                        if use_log_scale_duration_hist:
-                            log_min = np.floor(np.log10(min_x_val))
-                            log_max = np.ceil(np.log10(max_x_val))
-                            # Ensure we have at least 2 ticks for logspace
-                            num_ticks = max(2, int(log_max - log_min) + 1)
-                            tick_values = np.logspace(
-                                log_min, log_max, num_ticks
-                            )
-                        else:
-                            tick_values = np.linspace(
-                                min_x_val, max_x_val, num=5, endpoint=True
-                            )
-
+                        tick_values = np.linspace(
+                            min_x_val, max_x_val, num=5, endpoint=True
+                        )
                         tick_texts = format_seconds_to_readable(
                             pd.Series(tick_values), time_format_option
                         ).tolist()
-                        xaxis_updates["tickvals"] = tick_values
-                        xaxis_updates["ticktext"] = tick_texts
-
-                # Apply all collected updates in one go
-                if xaxis_updates:
-                    fig_duration_hist.update_xaxes(**xaxis_updates)
-                # --- END: DEFINITIVE FIX ---
+                        fig_duration_hist.update_xaxes(
+                            tickvals=tick_values, ticktext=tick_texts
+                        )
+                # --- END: FINAL ROBUST FIX ---
 
                 st.plotly_chart(fig_duration_hist, use_container_width=True)
             else:
