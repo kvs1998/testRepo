@@ -1,124 +1,87 @@
-with chart_cols_pair2[1]: # Refresh Duration vs. Rows Processed (Scatter Plot)
-        st.markdown("<p style='font-size:16px;'><b>Refresh Duration vs. Rows Processed</b></p>", unsafe_allow_html=True)
-        st.write("Examine if duration correlates with data volume.")
-        
-        all_row_metrics_scatter = {
-            'Total Rows Changed': ['NUMINSERTEDROWS', 'NUMDELETEDROWS', 'NUMCOPIEDROWS', 'NUMADDEDPARTITIONS', 'NUMREMOVEDPARTITIONS'],
-            'Inserted Rows': ['NUMINSERTEDROWS'],
-            'Deleted Rows': ['NUMDELETEDROWS'],
-            'Copied Rows': ['NUMCOPIEDROWS'],
-            'Added Partitions': ['NUMADDEDPARTITIONS'],
-            'Removed Partitions': ['NUMREMOVEDPARTITIONS']
-        }
-        
-        available_row_metrics_scatter = {
-            label: cols for label, cols in all_row_metrics_scatter.items()
-            if all(c in filtered_history_df.columns for c in cols)
-        }
+with chart_cols_pair3[0]:  # Refresh Duration Distribution (Histogram)
+        cols_chart_header = st.columns(
+            [0.8, 0.2]
+        )  # Internal columns for title and checkbox
+        with cols_chart_header[0]:
+            st.markdown(
+                "<p style='font-size:16px;'><b>Refresh Duration Distribution</b></p>",
+                unsafe_allow_html=True,
+            )
+        with cols_chart_header[1]:
+            use_log_scale_duration_hist = st.checkbox(
+                "Log Scale X-axis", key="log_scale_duration_hist_dt_state"
+            )
+        st.write("Distribution of refresh durations.")
 
-        if 'REFRESH_DURATION_SEC' in filtered_history_df.columns and available_row_metrics_scatter:
-            selected_row_metric_for_scatter = st.selectbox(
-                "Select X-axis Row Metric:",
-                options=list(available_row_metrics_scatter.keys()),
-                key="scatter_x_axis_metric"
+        if (
+            "REFRESH_DURATION_SEC" in filtered_history_df.columns
+            and not filtered_history_df["REFRESH_DURATION_SEC"].empty
+        ):
+            duration_data = (
+                filtered_history_df["REFRESH_DURATION_SEC"].dropna().copy()
             )
 
-            cols_to_sum = available_row_metrics_scatter[selected_row_metric_for_scatter]
-            scatter_df = filtered_history_df.copy()
-            scatter_df['X_AXIS_METRIC_VALUE'] = scatter_df[cols_to_sum].sum(axis=1)
+            # Filter out non-positive values for log scale *before* plotting
+            if use_log_scale_duration_hist:
+                duration_data = duration_data[duration_data > 0]
 
-            # --- START: FIX ---
-            # The original dropna was too strict, especially on 'STATE_MESSAGE',
-            # which is often NULL for successful runs. This filtered out most data.
-            # We now drop only if essential axis values are missing.
-            scatter_df = scatter_df.dropna(
-                subset=['REFRESH_DURATION_SEC', 'X_AXIS_METRIC_VALUE']
-            ).copy()
-
-            # Explicitly fill NaN in columns used for the hover tooltip.
-            # This prevents errors and preserves data points.
-            for col in ['STATE_MESSAGE', 'REFRESH_ACTION', 'QUALIFIED_NAME', 'STATE']:
-                if col in scatter_df.columns:
-                    scatter_df[col] = scatter_df[col].fillna('N/A')
-            # --- END: FIX ---
-            
-            # Log scale checkboxes (repositioned correctly within this column)
-            log_scales_cols = st.columns([1, 1])
-            with log_scales_cols[0]:
-                log_x_scatter = st.checkbox("Log Scale X-axis", key="log_x_scatter_dt_state")
-            with log_scales_cols[1]:
-                log_y_scatter = st.checkbox("Log Scale Y-axis", key="log_y_scatter_dt_state")
-
-            # Remove points where either X or Y is zero if log scale is to be applied
-            if log_x_scatter or log_y_scatter:
-                scatter_df = scatter_df[
-                    (scatter_df['REFRESH_DURATION_SEC'] > 0) &
-                    (scatter_df['X_AXIS_METRIC_VALUE'] > 0)
-                ].copy()
-
-            if not scatter_df.empty:
-                # Format timestamps and duration for hover text
-                scatter_df['REFRESH_START_TIME_FMT'] = scatter_df['REFRESH_START_TIME_DT'].dt.strftime('%Y-%m-%d %H:%M:%S').fillna("N/A")
-                scatter_df['REFRESH_END_TIME_FMT'] = scatter_df['REFRESH_END_TIME_DT'].dt.strftime('%Y-%m-%d %H:%M:%S').fillna("N/A")
-                scatter_df['REFRESH_DURATION_FMT_HOVER'] = format_seconds_to_readable(scatter_df['REFRESH_DURATION_SEC'], time_format_option)
-                scatter_df['X_AXIS_METRIC_FMT_HOVER'] = scatter_df['X_AXIS_METRIC_VALUE'].apply(lambda x: f"{int(x):,}")
-
-
-                fig_duration_vs_rows = px.scatter(
-                    scatter_df,
-                    x='X_AXIS_METRIC_VALUE',
-                    y='REFRESH_DURATION_SEC',
-                    color='STATE', # Color by refresh state
-                    hover_data={
-                        'QUALIFIED_NAME': False,
-                        'STATE': False,
-                        'REFRESH_ACTION': False,
-                        'STATE_MESSAGE': False,
-                        'REFRESH_START_TIME_DT': False,
-                        'REFRESH_END_TIME_DT': False
-                    },
-                    title=f'Refresh Duration vs. {selected_row_metric_for_scatter}', # Redundant title
+            if not duration_data.empty:
+                fig_duration_hist = px.histogram(
+                    duration_data,
+                    x="REFRESH_DURATION_SEC",
+                    nbins=20,
                     labels={
-                        'REFRESH_DURATION_SEC': f'Duration ({time_format_option})', # Dynamic label
-                        'X_AXIS_METRIC_VALUE': selected_row_metric_for_scatter
+                        "REFRESH_DURATION_SEC": f"Duration ({time_format_option})"
                     },
-                    color_discrete_map={ # Explicitly map colors for consistency
-                        'SUCCEEDED': 'blue', 'FAILED': 'red', 'UPSTREAM_FAILED': 'darkred',
-                        'CANCELLED': 'orange', 'EXECUTING': 'green', 'SCHEDULED': 'grey', 'UNKNOWN': 'purple'
-                    }
+                    text_auto=False,
                 )
+                fig_duration_hist.update_layout(bargap=0.1, title_text="")
 
-                fig_duration_vs_rows.update_traces(
-                    hovertemplate=(
-                        '<b>Table: %{customdata[0]}</b><br>' # QUALIFIED_NAME from customdata
-                        'State: %{customdata[1]}<br>'       # STATE from customdata
-                        f'{selected_row_metric_for_scatter}: %{{customdata[2]}}<br>'
-                        'Duration: %{customdata[3]}<br>'
-                        'Action: %{customdata[4]}<br>'
-                        'Start: %{customdata[5]}<br>'
-                        'End: %{customdata[6]}<br>'
-                        'Message: %{customdata[7]}<br>'
-                        '<extra></extra>'
-                    ),
-                    customdata=np.stack((
-                        scatter_df['QUALIFIED_NAME'],
-                        scatter_df['STATE'],
-                        scatter_df['X_AXIS_METRIC_FMT_HOVER'],
-                        scatter_df['REFRESH_DURATION_FMT_HOVER'],
-                        scatter_df['REFRESH_ACTION'],
-                        scatter_df['REFRESH_START_TIME_FMT'],
-                        scatter_df['REFRESH_END_TIME_FMT'],
-                        scatter_df['STATE_MESSAGE']
-                    ), axis=-1)
-                )
+                # --- START: DEFINITIVE FIX ---
+                # Build a dictionary of updates to apply in a single call
+                xaxis_updates = {}
 
-                if log_x_scatter:
-                    fig_duration_vs_rows.update_xaxes(type='log')
-                if log_y_scatter:
-                    fig_duration_vs_rows.update_yaxes(type='log')
+                if use_log_scale_duration_hist:
+                    xaxis_updates["type"] = "log"
+                    st.info(
+                        "Logarithmic scale applied to X-axis. Zero durations are excluded.",
+                        icon="ℹ️",
+                    )
 
-                st.plotly_chart(fig_duration_vs_rows, use_container_width=True)
+                if time_format_option != "seconds":
+                    min_x_val = duration_data.min()
+                    max_x_val = duration_data.max()
+
+                    if max_x_val > 0:
+                        if use_log_scale_duration_hist:
+                            log_min = np.floor(np.log10(min_x_val))
+                            log_max = np.ceil(np.log10(max_x_val))
+                            # Ensure we have at least 2 ticks for logspace
+                            num_ticks = max(2, int(log_max - log_min) + 1)
+                            tick_values = np.logspace(
+                                log_min, log_max, num_ticks
+                            )
+                        else:
+                            tick_values = np.linspace(
+                                min_x_val, max_x_val, num=5, endpoint=True
+                            )
+
+                        tick_texts = format_seconds_to_readable(
+                            pd.Series(tick_values), time_format_option
+                        ).tolist()
+                        xaxis_updates["tickvals"] = tick_values
+                        xaxis_updates["ticktext"] = tick_texts
+
+                # Apply all collected updates in one go
+                if xaxis_updates:
+                    fig_duration_hist.update_xaxes(**xaxis_updates)
+                # --- END: DEFINITIVE FIX ---
+
+                st.plotly_chart(fig_duration_hist, use_container_width=True)
             else:
-                st.info(f"No valid data for Refresh Duration vs. {selected_row_metric_for_scatter} scatter plot after filters (considering log scale requirements).", icon="ℹ️")
+                st.info(
+                    "No positive refresh duration data to display for histogram.",
+                    icon="ℹ️",
+                )
         else:
-            st.info("Necessary columns for Refresh Duration vs. Rows Processed analysis not available or no data after filters.", icon="ℹ️")
+            st.info("No REFRESH_DURATION_SEC data available.", icon="ℹ️")
