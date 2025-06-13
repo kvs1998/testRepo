@@ -21,61 +21,56 @@ with chart_cols_pair3[0]:  # Refresh Duration Distribution (Histogram)
                 filtered_history_df["REFRESH_DURATION_SEC"].dropna().copy()
             )
 
-            # --- START: FINAL, SIMPLIFIED, AND CORRECT FIX ---
-            plot_data = duration_data
-            hist_args = {}
-            is_data_available = True
+            # --- START: REAL FINAL FIX ---
+            plot_data_for_hist = duration_data
+            histogram_kwargs = {} # Use this to pass log_x and other direct px args
 
             if use_log_scale_duration_hist:
-                # For log scale, filter data first
-                plot_data = duration_data[duration_data > 0]
-                if plot_data.empty:
-                    is_data_available = False
-                else:
-                    # Pass the log_x parameter directly to the plotting function
-                    hist_args["log_x"] = True
+                # Filter out non-positive values for log scale *before* plotting
+                plot_data_for_hist = duration_data[duration_data > 0]
+                if not plot_data_for_hist.empty:
+                    histogram_kwargs["log_x"] = True # Tell px.histogram to use log scale directly
                     st.info(
                         "Logarithmic scale applied to X-axis. Zero durations are excluded.",
                         icon="ℹ️",
                     )
+                else:
+                    # If all data becomes zero/negative after filtering, inform user and return
+                    st.info("No positive refresh duration data available for log scale histogram.", icon="ℹ️")
+                    return # Exit the function for this chart if no data for log scale
 
-            if is_data_available and not plot_data.empty:
+            if not plot_data_for_hist.empty: # Check if data is available after potential log scale filtering
                 fig_duration_hist = px.histogram(
-                    plot_data,
+                    plot_data_for_hist,
                     x="REFRESH_DURATION_SEC",
                     nbins=20,
                     labels={
                         "REFRESH_DURATION_SEC": f"Duration ({time_format_option})"
                     },
                     text_auto=False,
-                    **hist_args,  # Apply log_x=True here if needed
+                    **histogram_kwargs # Apply log_x=True if set
                 )
                 fig_duration_hist.update_layout(bargap=0.1, title_text="")
 
-                # Only apply custom ticks if NOT using log scale and format is not seconds
-                if (
-                    not use_log_scale_duration_hist
-                    and time_format_option != "seconds"
-                ):
-                    min_x_val = plot_data.min()
-                    max_x_val = plot_data.max()
-                    if max_x_val > 0:
-                        tick_values = np.linspace(
-                            min_x_val, max_x_val, num=5, endpoint=True
-                        )
+                # ONLY apply custom ticks if NOT using log scale AND format is not "seconds"
+                if not use_log_scale_duration_hist and time_format_option != "seconds":
+                    min_x_val = plot_data_for_hist.min()
+                    max_x_val = plot_data_for_hist.max()
+                    if max_x_val > 0: # Ensure there's a range to calculate ticks for
+                        tick_values = np.linspace(min_x_val, max_x_val, num=5, endpoint=True)
                         tick_texts = format_seconds_to_readable(
                             pd.Series(tick_values), time_format_option
                         ).tolist()
                         fig_duration_hist.update_xaxes(
                             tickvals=tick_values, ticktext=tick_texts
                         )
-
+                
                 st.plotly_chart(fig_duration_hist, use_container_width=True)
-            else:
+            else: # This handles cases where plot_data_for_hist became empty (e.g. all 0s, or filters removed everything)
                 st.info(
-                    "No positive refresh duration data to display for histogram.",
+                    "No valid refresh duration data to display for histogram after filters.",
                     icon="ℹ️",
                 )
-            # --- END: FINAL, SIMPLIFIED, AND CORRECT FIX ---
+            # --- END: REAL FINAL FIX ---
         else:
             st.info("No REFRESH_DURATION_SEC data available.", icon="ℹ️")
