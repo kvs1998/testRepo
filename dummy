@@ -1,72 +1,80 @@
 with chart_cols_pair3[0]:  # Refresh Duration Distribution (Histogram)
-        cols_chart_header = st.columns(
-            [0.8, 0.2]
-        )  # Internal columns for title and checkbox
-        with cols_chart_header[0]:
-            st.markdown(
-                "<p style='font-size:16px;'><b>Refresh Duration Distribution</b></p>",
-                unsafe_allow_html=True,
-            )
-        with cols_chart_header[1]:
-            use_log_scale_duration_hist = st.checkbox(
-                "Log Scale X-axis", key="log_scale_duration_hist_dt_state"
-            )
-        st.write("Distribution of refresh durations.")
+    cols_chart_header = st.columns([0.8, 0.2])  # Internal columns for title and checkbox
 
-        if (
-            "REFRESH_DURATION_SEC" in filtered_history_df.columns
-            and not filtered_history_df["REFRESH_DURATION_SEC"].empty
-        ):
-            duration_data = (
-                filtered_history_df["REFRESH_DURATION_SEC"].dropna().copy()
-            )
+    with cols_chart_header[0]:
+        st.markdown(
+            "<p style='font-size:16px;'><b>Refresh Duration Distribution</b></p>",
+            unsafe_allow_html=True,
+        )
+    with cols_chart_header[1]:
+        use_log_scale_duration_hist = st.checkbox(
+            "Log Scale X-axis", key="log_scale_duration_hist_dt_state"
+        )
+    st.write("Distribution of refresh durations.")
 
-            # Filter out non-positive values for log scale *before* plotting
+    if (
+        "REFRESH_DURATION_SEC" in filtered_history_df.columns
+        and not filtered_history_df["REFRESH_DURATION_SEC"].empty
+    ):
+        duration_data = filtered_history_df["REFRESH_DURATION_SEC"].dropna().copy()
+
+        # Filter out non-positive values for log scale *before* plotting
+        if use_log_scale_duration_hist:
+            duration_data = duration_data[duration_data > 0]
+
+        if not duration_data.empty:
+            # ✅ FIX: Ensure consistent column name by converting to DataFrame
+            duration_df = pd.DataFrame({"REFRESH_DURATION_SEC": duration_data})
+
+            fig_duration_hist = px.histogram(
+                duration_df,
+                x="REFRESH_DURATION_SEC",
+                nbins=20,
+                labels={
+                    "REFRESH_DURATION_SEC": f"Duration ({time_format_option})"
+                },
+                text_auto=False,
+            )
+            fig_duration_hist.update_layout(bargap=0.1, title_text="")
+
+            xaxis_updates = {}
+
             if use_log_scale_duration_hist:
-                duration_data = duration_data[duration_data > 0]
-
-            if not duration_data.empty:
-                fig_duration_hist = px.histogram(
-                    duration_data,
-                    x="REFRESH_DURATION_SEC",
-                    nbins=20,
-                    labels={
-                        "REFRESH_DURATION_SEC": f"Duration ({time_format_option})"
-                    },
-                    text_auto=False,
+                xaxis_updates["type"] = "log"
+                st.info(
+                    "Logarithmic scale applied to X-axis. Zero durations are excluded.",
+                    icon="ℹ️",
                 )
-                fig_duration_hist.update_layout(bargap=0.1, title_text="")
 
-                # --- START: FINAL ROBUST FIX ---
-                if use_log_scale_duration_hist:
-                    # When using log scale, let Plotly handle the axis automatically.
-                    # It does a great job with log axes by default.
-                    fig_duration_hist.update_xaxes(type="log")
-                    st.info(
-                        "Logarithmic scale applied to X-axis. Zero durations are excluded.",
-                        icon="ℹ️",
-                    )
-                elif time_format_option != "seconds":
-                    # ONLY apply custom ticks if NOT using log scale.
-                    min_x_val = duration_data.min()
-                    max_x_val = duration_data.max()
-                    if max_x_val > 0:
+            if time_format_option != "seconds":
+                min_x_val = duration_data.min()
+                max_x_val = duration_data.max()
+
+                if max_x_val > 0:
+                    if use_log_scale_duration_hist:
+                        log_min = np.floor(np.log10(min_x_val))
+                        log_max = np.ceil(np.log10(max_x_val))
+                        num_ticks = max(2, int(log_max - log_min) + 1)
+                        tick_values = np.logspace(log_min, log_max, num_ticks)
+                    else:
                         tick_values = np.linspace(
                             min_x_val, max_x_val, num=5, endpoint=True
                         )
-                        tick_texts = format_seconds_to_readable(
-                            pd.Series(tick_values), time_format_option
-                        ).tolist()
-                        fig_duration_hist.update_xaxes(
-                            tickvals=tick_values, ticktext=tick_texts
-                        )
-                # --- END: FINAL ROBUST FIX ---
 
-                st.plotly_chart(fig_duration_hist, use_container_width=True)
-            else:
-                st.info(
-                    "No positive refresh duration data to display for histogram.",
-                    icon="ℹ️",
-                )
+                    tick_texts = format_seconds_to_readable(
+                        pd.Series(tick_values), time_format_option
+                    ).tolist()
+                    xaxis_updates["tickvals"] = tick_values
+                    xaxis_updates["ticktext"] = tick_texts
+
+            if xaxis_updates:
+                fig_duration_hist.update_xaxes(**xaxis_updates)
+
+            st.plotly_chart(fig_duration_hist, use_container_width=True)
         else:
-            st.info("No REFRESH_DURATION_SEC data available.", icon="ℹ️")
+            st.info(
+                "No positive refresh duration data to display for histogram.",
+                icon="ℹ️",
+            )
+    else:
+        st.info("No REFRESH_DURATION_SEC data available.", icon="ℹ️")
