@@ -221,7 +221,7 @@ def render_dt_state_tab(history_df: pd.DataFrame):
                 filtered_history_df['TARGET_LAG_SEC'] == selected_target_lag_sec_for_filter
             ].copy()
         else:
-            st.warning("`TARGET_LAG_SEC` column not found in metadata. Target Lag filter skipped.", icon="⚠️")
+            st.warning("`TARGET_LAG_SEC` column not found in metadata. Target Lag filter skipped.", icon="ℹ️")
 
 
     # Apply date range filter using Timestamps directly
@@ -236,22 +236,19 @@ def render_dt_state_tab(history_df: pd.DataFrame):
         return
 
     # --- Refresh Trends & Distributions ---
-    # Moved subheader + log checkbox to a consistent pattern
-    cols_subheader_and_checkbox_1 = st.columns([0.8, 0.2])
-    with cols_subheader_and_checkbox_1[0]:
-        st.subheader("Refresh Trends & Status Over Time")
-    with cols_subheader_and_checkbox_1[1]:
+    # Moved subheader and checkbox correctly
+    st.subheader("Refresh Trends & Status Over Time")
+    cols_description_and_checkbox_1 = st.columns([0.8, 0.2])
+    with cols_description_and_checkbox_1[0]:
+        st.write("Count of refreshes by state over the selected time range.")
+    with cols_description_and_checkbox_1[1]:
         use_log_scale_refresh_status = st.checkbox("Log Scale Y-axis", key="log_scale_refresh_status_dt_state")
-
-    st.write("Count of refreshes by state over the selected time range.") # Description belongs outside chart-specific columns
-
-    # Charts below the subheader
+    
+    # Charts for this section are side-by-side
     chart_cols_pair1 = st.columns([1, 1])
 
     with chart_cols_pair1[0]:
-        # No internal header for checkbox, it's handled by the main subheader above
         st.markdown("<p style='font-size:16px;'><b>Daily Refresh Status Trend</b></p>", unsafe_allow_html=True)
-        st.write("Count of refreshes by state over the selected time range.") # Redundant description
         if not filtered_history_df.empty:
             status_trend_df = filtered_history_df.groupby([
                 pd.Grouper(key='DATA_TIMESTAMP_DT', freq='D'), 'STATE'
@@ -316,7 +313,6 @@ def render_dt_state_tab(history_df: pd.DataFrame):
         use_log_scale_row_trend = st.checkbox("Log Scale Y-axis", key="log_scale_row_changes_trend_dt_state")
     st.write("Trend of inserted, deleted, copied, added partitions, and removed partitions over time.")
 
-
     row_change_trend_cols_raw = ['NUMINSERTEDROWS', 'NUMDELETEDROWS', 'NUMCOPIEDROWS', 'NUMADDEDPARTITIONS', 'NUMREMOVEDPARTITIONS']
     row_change_trend_cols_display_map = {
         'NUMINSERTEDROWS': 'Inserted Rows',
@@ -369,11 +365,9 @@ def render_dt_state_tab(history_df: pd.DataFrame):
     st.write("Average and Median refresh duration over time.")
 
 
-    # Charts for this section are side-by-side
     chart_cols_pair2 = st.columns([1, 1])
 
     with chart_cols_pair2[0]: # Refresh Duration Trend
-        # No internal header for checkbox, handled by subheader above
         st.markdown("<p style='font-size:16px;'><b>Refresh Duration Trend</b></p>", unsafe_allow_html=True)
         st.write("Average and Median refresh duration over time.") # Redundant description
         if 'REFRESH_DURATION_SEC' in filtered_history_df.columns and not filtered_history_df['REFRESH_DURATION_SEC'].empty:
@@ -430,14 +424,12 @@ def render_dt_state_tab(history_df: pd.DataFrame):
 
             scatter_df = scatter_df.dropna(subset=['REFRESH_DURATION_SEC', 'X_AXIS_METRIC_VALUE', 'QUALIFIED_NAME', 'STATE', 'REFRESH_ACTION', 'REFRESH_START_TIME_DT', 'REFRESH_END_TIME_DT', 'STATE_MESSAGE']).copy()
             
-            # Log scale checkboxes positioned correctly WITHIN this scatter plot's column
             log_scales_cols = st.columns([1, 1])
             with log_scales_cols[0]:
                 log_x_scatter = st.checkbox("Log Scale X-axis", key="log_x_scatter_dt_state")
             with log_scales_cols[1]:
                 log_y_scatter = st.checkbox("Log Scale Y-axis", key="log_y_scatter_dt_state")
 
-            # Remove points where either X or Y is zero if log scale is to be applied
             if log_x_scatter or log_y_scatter:
                 scatter_df = scatter_df[
                     (scatter_df['REFRESH_DURATION_SEC'] > 0) &
@@ -445,7 +437,6 @@ def render_dt_state_tab(history_df: pd.DataFrame):
                 ].copy()
 
             if not scatter_df.empty:
-                # Format timestamps and duration for hover text
                 scatter_df['REFRESH_START_TIME_FMT'] = scatter_df['REFRESH_START_TIME_DT'].dt.strftime('%Y-%m-%d %H:%M:%S')
                 scatter_df['REFRESH_END_TIME_FMT'] = scatter_df['REFRESH_END_TIME_DT'].dt.strftime('%Y-%m-%d %H:%M:%S')
                 scatter_df['REFRESH_DURATION_FMT_HOVER'] = format_seconds_to_readable(scatter_df['REFRESH_DURATION_SEC'], time_format_option)
@@ -470,7 +461,7 @@ def render_dt_state_tab(history_df: pd.DataFrame):
                         'REFRESH_DURATION_SEC': f'Duration ({time_format_option})', # Dynamic label
                         'X_AXIS_METRIC_VALUE': selected_row_metric_for_scatter
                     },
-                    color_discrete_map={ # Explicitly map colors for consistency
+                    color_discrete_map={
                         'SUCCEEDED': 'blue', 'FAILED': 'red', 'UPSTREAM_FAILED': 'darkred',
                         'CANCELLED': 'orange', 'EXECUTING': 'green', 'SCHEDULED': 'grey', 'UNKNOWN': 'purple'
                     }
@@ -570,7 +561,7 @@ def render_dt_state_tab(history_df: pd.DataFrame):
             else:
                 st.info("No refresh duration data within selected range for histogram.", icon="ℹ️")
         else:
-            st.info("No REFRESH_DURATION_SEC data available.", icon="ℹ️")
+            st.info("No REFRESH_DURATION_SEC data available.", icon="ℹs️")
 
 
     with chart_cols_pair3[1]: # Row Change Overview (Grouped Bar Chart)
@@ -623,14 +614,21 @@ def render_dt_state_tab(history_df: pd.DataFrame):
     with cols_subheader_and_checkbox_4[0]:
         st.subheader("Failure & Anomaly Detection")
     with cols_subheader_and_checkbox_4[1]:
-        use_log_scale_failure_trend = st.checkbox("Log Scale Y-axis", key="log_scale_failure_trend_dt_state")
+        # There's no single log scale checkbox for this section as a whole,
+        # but rather for individual charts within it.
+        # This part should contain text for description.
+        pass # No checkbox here
 
     st.write("Count of failed/cancelled refreshes over time.") # Description for the section
 
-    chart_cols_pair4 = st.columns([1, 1]) # Charts side-by-side in this row
+    chart_cols_pair4 = st.columns([1, 1])
 
     with chart_cols_pair4[0]: # Daily / Hourly Failure Count Trend
-        st.markdown("<p style='font-size:16px;'><b>Daily Failure Count Trend</b></p>", unsafe_allow_html=True)
+        cols_chart_header = st.columns([0.8, 0.2]) # Internal columns for title and checkbox
+        with cols_chart_header[0]:
+            st.markdown("<p style='font-size:16px;'><b>Daily Failure Count Trend</b></p>", unsafe_allow_html=True)
+        with cols_chart_header[1]:
+            use_log_scale_failure_trend = st.checkbox("Log Scale Y-axis", key="log_scale_failure_trend_dt_state")
         st.write("Count of failed/cancelled refreshes over time.") # Redundant description
         
         if not filtered_history_df.empty:
@@ -679,11 +677,11 @@ def render_dt_state_tab(history_df: pd.DataFrame):
     st.divider()
 
     # --- Detailed Failed Refreshes Table ---
-    # Moved checkbox to header line
-    cols_table_header_1 = st.columns([0.8, 0.2])
-    with cols_table_header_1[0]:
+    # Moved checkbox to align with subheader
+    cols_subheader_and_checkbox_5 = st.columns([0.8, 0.2])
+    with cols_subheader_and_checkbox_5[0]:
         st.subheader("Failed & Cancelled Refreshes Details")
-    with cols_table_header_1[1]:
+    with cols_subheader_and_checkbox_5[1]:
         show_latest_failed_per_table = st.checkbox("Show latest per table", key="latest_failed_per_table")
     st.write("Detailed list of dynamic table refreshes that did not succeed.")
 
@@ -740,11 +738,11 @@ def render_dt_state_tab(history_df: pd.DataFrame):
     st.divider()
 
     # --- Top N Longest Refreshes Table ---
-    # Moved checkbox to header line
-    cols_table_header_2 = st.columns([0.8, 0.2])
-    with cols_table_header_2[0]:
+    # Moved checkbox to align with subheader
+    cols_subheader_and_checkbox_6 = st.columns([0.8, 0.2])
+    with cols_subheader_and_checkbox_6[0]:
         st.subheader("Top Longest Refreshes")
-    with cols_table_header_2[1]:
+    with cols_subheader_and_checkbox_6[1]:
         show_longest_per_table = st.checkbox("Show longest per table", key="longest_refresh_per_table")
     st.write("Identifies historical refresh events with the longest durations.")
 
@@ -798,15 +796,9 @@ def render_dt_state_tab(history_df: pd.DataFrame):
     st.divider()
 
     # --- Top N Frequent Failure Messages / Codes Table ---
-    # This table has no custom checkbox, just align its header
-    cols_table_header_3 = st.columns([0.8, 0.2])
-    with cols_table_header_3[0]:
-        st.subheader("Frequent Failure Patterns")
-    with cols_table_header_3[1]:
-        # No checkbox for this section, intentionally left blank for alignment
-        pass 
+    # This table has no custom checkbox, its subheader stands alone
+    st.subheader("Frequent Failure Patterns")
     st.write("Identifies recurring error messages or codes from failed refreshes.")
-
 
     failure_patterns_df = filtered_history_df[
         filtered_history_df['STATE'].isin(['FAILED', 'CANCELLED', 'UPSTREAM_FAILED'])
