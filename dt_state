@@ -2,6 +2,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import numpy as np
 from datetime import datetime, time, date
 
@@ -476,158 +477,105 @@ def render_dt_state_tab(history_df: pd.DataFrame):
 
     st.divider()
 
-    # --- START: REVISED SECTION for Row & Partition Change Charts ---
-    # Chart 2a: Row Changes Over Time (Line Chart)
-    cols_chart2a_header = st.columns([0.8, 0.2])
-    with cols_chart2a_header[0]:
+    # --- START: REVISED SECTION for Merged Row & Partition Change Chart ---
+    cols_chart2_header = st.columns([0.8, 0.2])
+    with cols_chart2_header[0]:
         st.markdown(
-            "<p style='font-size:16px;'><b>Row Changes Over Time</b></p>",
+            "<p style='font-size:16px;'><b>Row & Partition Changes Over Time</b></p>",
             unsafe_allow_html=True,
         )
-    with cols_chart2a_header[1]:
-        use_log_scale_row_trend = st.checkbox(
-            "Log Scale Y-axis", key="log_scale_row_changes_trend_dt_state"
+    with cols_chart2_header[1]:
+        use_log_scale_rows = st.checkbox(
+            "Log Scale Rows", key="log_scale_rows_dt_state"
         )
     st.write(
-        "Compare trends of inserted, deleted, and copied rows. A 'Copied Rows' line that is significantly higher than 'Inserted' or 'Deleted' can indicate an inefficient refresh."
+        "Trend of row and partition changes, using a secondary Y-axis for partitions."
     )
 
-    row_change_trend_cols_raw = [
+    change_cols = [
         "NUMINSERTEDROWS",
         "NUMDELETEDROWS",
-        "NUMCOPIEDROWS",
-    ]
-    row_change_trend_cols_display_map = {
-        "NUMINSERTEDROWS": "Inserted Rows",
-        "NUMDELETEDROWS": "Deleted Rows",
-        "NUMCOPIEDROWS": "Copied Rows",
-    }
-
-    available_row_trend_cols = [
-        col
-        for col in row_change_trend_cols_raw
-        if col in filtered_history_df.columns
-    ]
-
-    if available_row_trend_cols and not filtered_history_df.empty:
-        row_trend_df = (
-            filtered_history_df.groupby(
-                pd.Grouper(key="DATA_TIMESTAMP_DT", freq="D")
-            )[available_row_trend_cols]
-            .sum()
-            .reset_index()
-        )
-        row_trend_df.rename(
-            columns={"DATA_TIMESTAMP_DT": "Date"}, inplace=True
-        )
-
-        row_trend_melted = row_trend_df.melt(
-            id_vars=["Date"],
-            value_vars=available_row_trend_cols,
-            var_name="Row_Metric_Raw",
-            value_name="Count",
-        )
-        row_trend_melted["Row_Metric"] = row_trend_melted[
-            "Row_Metric_Raw"
-        ].map(row_change_trend_cols_display_map)
-
-        fig_row_trend = px.line(
-            row_trend_melted,
-            x="Date",
-            y="Count",
-            color="Row_Metric",
-            labels={"Count": "Number of Rows", "Row_Metric": "Change Type"},
-        )
-        fig_row_trend.update_layout(hovermode="x unified", title_text="")
-
-        if use_log_scale_row_trend:
-            fig_row_trend.update_yaxes(type="log", rangemode="tozero")
-            st.info(
-                "Logarithmic scale applied to Y-axis. Zero counts are handled gracefully.",
-                icon="ℹ️",
-            )
-
-        st.plotly_chart(fig_row_trend, use_container_width=True)
-    else:
-        st.info(
-            "No row change data (NUMINSERTEDROWS, etc.) available for trend analysis.",
-            icon="ℹ️",
-        )
-
-    # Chart 2b: Partition Changes Over Time (Line Chart)
-    cols_chart2b_header = st.columns([0.8, 0.2])
-    with cols_chart2b_header[0]:
-        st.markdown(
-            "<p style='font-size:16px;'><b>Partition Changes Over Time</b></p>",
-            unsafe_allow_html=True,
-        )
-    with cols_chart2b_header[1]:
-        use_log_scale_partition_trend = st.checkbox(
-            "Log Scale Y-axis",
-            key="log_scale_partition_changes_trend_dt_state",
-        )
-    st.write("Trend of added and removed partitions over time.")
-
-    partition_change_cols_raw = [
+"NUMCOPIEDROWS",
         "NUMADDEDPARTITIONS",
         "NUMREMOVEDPARTITIONS",
     ]
-    partition_change_cols_display_map = {
-        "NUMADDEDPARTITIONS": "Added Partitions",
-        "NUMREMOVEDPARTITIONS": "Removed Partitions",
-    }
-
-    available_partition_cols = [
-        col
-        for col in partition_change_cols_raw
-        if col in filtered_history_df.columns
+    available_change_cols = [
+        col for col in change_cols if col in filtered_history_df.columns
     ]
 
-    if available_partition_cols and not filtered_history_df.empty:
-        partition_trend_df = (
+    if available_change_cols and not filtered_history_df.empty:
+        change_trend_df = (
             filtered_history_df.groupby(
                 pd.Grouper(key="DATA_TIMESTAMP_DT", freq="D")
-            )[available_partition_cols]
+            )[available_change_cols]
             .sum()
             .reset_index()
         )
-        partition_trend_df.rename(
+        change_trend_df.rename(
             columns={"DATA_TIMESTAMP_DT": "Date"}, inplace=True
         )
 
-        partition_trend_melted = partition_trend_df.melt(
-            id_vars=["Date"],
-            value_vars=available_partition_cols,
-            var_name="Partition_Metric_Raw",
-            value_name="Count",
+        # Create a figure with secondary y-axis
+        fig = go.Figure()
+
+        # Define mappings for row metrics
+        row_metrics = {
+            "NUMINSERTEDROWS": "Inserted Rows",
+            "NUMDELETEDROWS": "Deleted Rows",
+            "NUMCOPIEDROWS": "Copied Rows",
+        }
+        # Add traces for row metrics to the primary Y-axis
+        for col, name in row_metrics.items():
+            if col in change_trend_df.columns:
+                fig.add_trace(
+                    go.Scatter(
+                        x=change_trend_df["Date"],
+                        y=change_trend_df[col],
+                        name=name,
+                        mode="lines",
+                    )
+                )
+
+        # Define mappings for partition metrics
+        partition_metrics = {
+            "NUMADDEDPARTITIONS": "Added Partitions",
+            "NUMREMOVEDPARTITIONS": "Removed Partitions",
+        }
+        # Add traces for partition metrics to the secondary Y-axis
+        for col, name in partition_metrics.items():
+            if col in change_trend_df.columns:
+                fig.add_trace(
+                    go.Scatter(
+                        x=change_trend_df["Date"],
+                        y=change_trend_df[col],
+                        name=name,
+                        mode="lines",
+                        yaxis="y2",
+                    )
+                )
+
+        # Update layout to include the secondary y-axis and configure hover mode
+        fig.update_layout(
+            hovermode="x unified",
+            yaxis=dict(title="Number of Rows"),
+            yaxis2=dict(
+                title="Number of Partitions",
+                overlaying="y",
+                side="right",
+                showgrid=False,
+            ),
+            legend=dict(
+                orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1
+            ),
         )
-        partition_trend_melted["Partition_Metric"] = partition_trend_melted[
-            "Partition_Metric_Raw"
-        ].map(partition_change_cols_display_map)
 
-        fig_partition_trend = px.line(
-            partition_trend_melted,
-            x="Date",
-            y="Count",
-            color="Partition_Metric",
-            labels={
-                "Count": "Number of Partitions",
-                "Partition_Metric": "Change Type",
-            },
-        )
-        fig_partition_trend.update_layout(hovermode="x unified", title_text="")
+        if use_log_scale_rows:
+            fig.update_yaxes(type="log", title_text="Number of Rows (Log Scale)")
 
-        if use_log_scale_partition_trend:
-            fig_partition_trend.update_yaxes(type="log", rangemode="tozero")
-            st.info(
-                "Logarithmic scale applied to Y-axis. Zero counts are handled gracefully.",
-                icon="ℹ️",
-            )
-
-        st.plotly_chart(fig_partition_trend, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True)
     else:
         st.info(
-            "No partition change data (NUMADDEDPARTITIONS, etc.) available for trend analysis.",
+            "No row or partition change data available for trend analysis.",
             icon="ℹ️",
         )
     # --- END: REVISED SECTION ---
@@ -677,7 +625,6 @@ def render_dt_state_tab(history_df: pd.DataFrame):
                 duration_trend_df,
                 x="Date",
                 y=["Mean Duration", "Median Duration", "P95 Duration"],
-                title="Daily Refresh Duration Trend (Mean, Median, P95)",  # Title is redundant
                 labels={"value": f"Duration ({time_format_option})"},
             )
             fig_duration_trend.update_layout(title_text="")
@@ -803,7 +750,7 @@ def render_dt_state_tab(history_df: pd.DataFrame):
                     scatter_df,
                     x="X_AXIS_METRIC_VALUE",
                     y="REFRESH_DURATION_SEC",
-                    color="STATE",  # Color by refresh state
+                    color="STATE",
                     hover_data={
                         "QUALIFIED_NAME": False,
                         "STATE": False,
@@ -812,12 +759,11 @@ def render_dt_state_tab(history_df: pd.DataFrame):
                         "REFRESH_START_TIME_DT": False,
                         "REFRESH_END_TIME_DT": False,
                     },
-                    title=f"Refresh Duration vs. {selected_row_metric_for_scatter}",  # Redundant title
                     labels={
-                        "REFRESH_DURATION_SEC": f"Duration ({time_format_option})",  # Dynamic label
+                        "REFRESH_DURATION_SEC": f"Duration ({time_format_option})",
                         "X_AXIS_METRIC_VALUE": selected_row_metric_for_scatter,
                     },
-                    color_discrete_map={  # Explicitly map colors for consistency
+                    color_discrete_map={
                         "SUCCEEDED": "blue",
                         "FAILED": "red",
                         "UPSTREAM_FAILED": "darkred",
@@ -830,8 +776,8 @@ def render_dt_state_tab(history_df: pd.DataFrame):
 
                 fig_duration_vs_rows.update_traces(
                     hovertemplate=(
-                        "<b>Table: %{customdata[0]}</b><br>"  # QUALIFIED_NAME from customdata
-                        "State: %{customdata[1]}<br>"  # STATE from customdata
+                        "<b>Table: %{customdata[0]}</b><br>"
+                        "State: %{customdata[1]}<br>"
                         f"{selected_row_metric_for_scatter}: %{{customdata[2]}}<br>"
                         "Duration: %{customdata[3]}<br>"
                         "Action: %{customdata[4]}<br>"
@@ -903,9 +849,7 @@ def render_dt_state_tab(history_df: pd.DataFrame):
             )
 
             if use_log_scale_duration_hist:
-                duration_data = duration_data.apply(
-                    lambda x: x if x > 0 else 1e-9
-                )
+                duration_data = duration_data[duration_data > 0]
 
             if not duration_data.empty:
                 fig_duration_hist = px.histogram(
@@ -919,29 +863,19 @@ def render_dt_state_tab(history_df: pd.DataFrame):
                 )
                 fig_duration_hist.update_layout(bargap=0.1, title_text="")
 
+                # FIX: Removed 'rangemode' from the log axis update to prevent blank chart
                 if use_log_scale_duration_hist:
-                    fig_duration_hist.update_xaxes(
-                        type="log", rangemode="tozero"
-                    )
+                    fig_duration_hist.update_xaxes(type="log")
                     st.info(
-                        "Logarithmic scale applied to X-axis. Zero counts are handled gracefully.",
+                        "Logarithmic scale applied to X-axis. Zero durations are excluded.",
                         icon="ℹ️",
                     )
 
                 if time_format_option != "seconds":
-                    min_x_val = (
-                        fig_duration_hist.layout.xaxis.range[0]
-                        if fig_duration_hist.layout.xaxis.range
-                        else duration_data.min()
-                    )
-                    max_x_val = (
-                        fig_duration_hist.layout.xaxis.range[1]
-                        if fig_duration_hist.layout.xaxis.range
-                        else duration_data.max()
-                    )
-
-                    if min_x_val < 1e-9 and use_log_scale_duration_hist:
-                        min_x_val = 1.0
+                    # This section for custom tick formatting can be complex with log scales,
+                    # but we'll leave it as it might work for some cases.
+                    min_x_val = duration_data.min()
+                    max_x_val = duration_data.max()
 
                     if max_x_val > 0:
                         if not use_log_scale_duration_hist:
@@ -949,11 +883,7 @@ def render_dt_state_tab(history_df: pd.DataFrame):
                                 min_x_val, max_x_val, num=5, endpoint=True
                             )
                         else:
-                            log_min = (
-                                np.floor(np.log10(min_x_val))
-                                if min_x_val > 0
-                                else 0
-                            )
+                            log_min = np.floor(np.log10(min_x_val))
                             log_max = np.ceil(np.log10(max_x_val))
                             tick_values = np.logspace(
                                 log_min, log_max, int(log_max - log_min) + 1
@@ -963,9 +893,7 @@ def render_dt_state_tab(history_df: pd.DataFrame):
                                 & (tick_values <= max_x_val)
                             ]
                             if not tick_values.size:
-                                tick_values = np.linspace(
-                                    min_x_val, max_x_val, 3
-                                )
+                                tick_values = np.logspace(log_min, log_max, 3)
 
                         tick_texts = format_seconds_to_readable(
                             pd.Series(tick_values), time_format_option
@@ -1035,7 +963,6 @@ def render_dt_state_tab(history_df: pd.DataFrame):
                     x="REFRESH_ACTION",
                     y="Count",
                     color="Row_Metric",
-                    title="Row Changes by Refresh Action",
                     barmode="group",
                     labels={
                         "REFRESH_ACTION": "Refresh Action",
@@ -1144,7 +1071,6 @@ def render_dt_state_tab(history_df: pd.DataFrame):
                 trigger_counts,
                 values="Count",
                 names="Trigger",
-                title="Refresh Trigger Distribution",
                 hole=0.3,
             )
             fig_trigger_dist.update_traces(
@@ -1157,7 +1083,6 @@ def render_dt_state_tab(history_df: pd.DataFrame):
     st.divider()
 
     # --- Detailed Failed Refreshes Table ---
-    # Moved checkbox to header line
     cols_table_header_1 = st.columns([0.8, 0.2])
     with cols_table_header_1[0]:
         st.subheader("Failed & Cancelled Refreshes Details")
@@ -1253,7 +1178,6 @@ def render_dt_state_tab(history_df: pd.DataFrame):
     st.divider()
 
     # --- Top N Longest Refreshes Table ---
-    # Moved checkbox to header line
     cols_table_header_2 = st.columns([0.8, 0.2])
     with cols_table_header_2[0]:
         st.subheader("Top Longest Refreshes")
@@ -1355,7 +1279,6 @@ def render_dt_state_tab(history_df: pd.DataFrame):
     ].copy()
 
     if not failure_patterns_df.empty:
-        # Group by STATE_CODE and STATE_MESSAGE, count occurrences, and get the last occurrence time
         failure_summary = (
             failure_patterns_df.groupby(["STATE_CODE", "STATE_MESSAGE"])
             .agg(
