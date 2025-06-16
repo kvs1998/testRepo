@@ -1,74 +1,85 @@
-with chart_cols_pair2[1]: # RIGHT COLUMN: Refresh Duration vs. Rows Processed
-        # Headers and initial write
-        st.markdown(
-            "<p style='font-size:16px;'><b>Refresh Duration vs. Rows Processed</b></p>",
-            unsafe_allow_html=True,
+with chart_cols_pair2[1]:  # RIGHT COLUMN
+    st.markdown(
+        "<p style='font-size:16px;'><b>Refresh Duration vs. Rows Processed</b></p>",
+        unsafe_allow_html=True,
+    )
+    st.write(
+        "Examine if duration correlates with data volume. Helps identify inefficiencies."
+    )
+
+    # ... (your metric dictionary definitions remain the same) ...
+    all_row_metrics_scatter = {
+        "Total Rows Changed": [
+            "NUMINSERTEDROWS",
+            "NUMDELETEDROWS",
+            "NUMCOPIEDROWS",
+            "NUMADDEDPARTITIONS",
+            "NUMREMOVEDPARTITIONS",
+        ],
+        "Inserted Rows": ["NUMINSERTEDROWS"],
+        "Deleted Rows": ["NUMDELETEDROWS"],
+        "Copied Rows": ["NUMCOPIEDROWS"],
+        "Added Partitions": ["NUMADDEDPARTITIONS"],
+        "Removed Partitions": ["NUMREMOVEDPARTITIONS"],
+    }
+
+    available_row_metrics_scatter = {
+        label: cols
+        for label, cols in all_row_metrics_scatter.items()
+        if all(c in filtered_history_df.columns for c in cols)
+    }
+
+    if (
+        "REFRESH_DURATION_SEC" in filtered_history_df.columns
+        and available_row_metrics_scatter
+    ):
+        scatter_df = filtered_history_df[
+            filtered_history_df["REFRESH_ACTION"] != "NO_DATA"
+        ].copy()
+
+        scatter_controls_col1, scatter_controls_col2, scatter_controls_col3 = st.columns(
+            [2, 1, 1]
         )
-        st.write("Examine if duration correlates with data volume. Helps identify inefficiencies.")
-
-        all_row_metrics_scatter = {
-            "Total Rows Changed": [
-                "NUMINSERTEDROWS",
-                "NUMDELETEDROWS",
-                "NUMCOPIEDROWS",
-                "NUMADDEDPARTITIONS",
-                "NUMREMOVEDPARTITIONS",
-            ],
-            "Inserted Rows": ["NUMINSERTEDROWS"],
-            "Deleted Rows": ["NUMDELETEDROWS"],
-            "Copied Rows": ["NUMCOPIEDROWS"],
-            "Added Partitions": ["NUMADDEDPARTITIONS"],
-            "Removed Partitions": ["NUMREMOVEDPARTITIONS"],
-        }
-
-        available_row_metrics_scatter = {
-            label: cols
-            for label, cols in all_row_metrics_scatter.items()
-            if all(c in filtered_history_df.columns for c in cols)
-        }
-
-        if (
-            "REFRESH_DURATION_SEC" in filtered_history_df.columns
-            and available_row_metrics_scatter
-        ):
-            # Filtering out 'NO_DATA' actions for better insight on this plot
-            # Ensure the copy() after filtering
-            scatter_df = filtered_history_df[
-                filtered_history_df['REFRESH_ACTION'] != 'NO_DATA'
-            ].copy()
-
-
-            # Create a row for the selectbox and log scale checkboxes
-            scatter_controls_col1, scatter_controls_col2, scatter_controls_col3 = st.columns([2, 1, 1])
-
-            with scatter_controls_col1:
-                selected_row_metric_for_scatter = st.selectbox(
-                    "X-axis Metric:", # Shorter label for better fit
-                    options=list(available_row_metrics_scatter.keys()),
-                    key="scatter_x_axis_metric"
-                )
-            
-            with scatter_controls_col2:
-                log_x_scatter = st.checkbox("Log X-axis", key="log_x_scatter_dt_state")
-            
-            with scatter_controls_col3:
-                log_y_scatter = st.checkbox("Log Y-axis", key="log_y_scatter_dt_state")
-
-
-            cols_to_sum = available_row_metrics_scatter[
-                selected_row_metric_for_scatter
-            ]
-            scatter_df["X_AXIS_METRIC_VALUE"] = scatter_df[cols_to_sum].sum(
-                axis=1
+        with scatter_controls_col1:
+            selected_row_metric_for_scatter = st.selectbox(
+                "X-axis Metric:",
+                options=list(available_row_metrics_scatter.keys()),
+                key="scatter_x_axis_metric",
+            )
+        with scatter_controls_col2:
+            log_x_scatter = st.checkbox(
+                "Log X-axis", key="log_x_scatter_dt_state"
+            )
+        with scatter_controls_col3:
+            log_y_scatter = st.checkbox(
+                "Log Y-axis", key="log_y_scatter_dt_state"
             )
 
-            # Ensure essential columns are not NaN for plotting
-            # Important: Perform this AFTER X_AXIS_METRIC_VALUE is calculated
-            scatter_df = scatter_df.dropna(
-                subset=["REFRESH_DURATION_SEC", "X_AXIS_METRIC_VALUE"]
-            ).copy()
+        cols_to_sum = available_row_metrics_scatter[
+            selected_row_metric_for_scatter
+        ]
+        scatter_df["X_AXIS_METRIC_VALUE"] = scatter_df[cols_to_sum].sum(
+            axis=1
+        )
 
-            # Fill NaN in hover columns to prevent errors in tooltip
+        scatter_df = scatter_df.dropna(
+            subset=["REFRESH_DURATION_SEC", "X_AXIS_METRIC_VALUE"]
+        ).copy()
+
+        # Filter for log scale *before* formatting to avoid extra work
+        if log_x_scatter or log_y_scatter:
+            scatter_df = scatter_df[
+                (scatter_df["REFRESH_DURATION_SEC"] > 0)
+                & (scatter_df["X_AXIS_METRIC_VALUE"] > 0)
+            ].copy()
+
+        if scatter_df.empty:
+            st.info(
+                f"No valid data points available for scatter plot with selected filters. Please adjust filters.",
+                icon="ℹ️",
+            )
+        else:
+            # --- Data Formatting for Hover ---
             for col in [
                 "STATE_MESSAGE",
                 "REFRESH_ACTION",
@@ -78,132 +89,112 @@ with chart_cols_pair2[1]: # RIGHT COLUMN: Refresh Duration vs. Rows Processed
                 if col in scatter_df.columns:
                     scatter_df[col] = scatter_df[col].fillna("N/A")
 
-
-            # Filter out non-positive values if log scale is enabled
-            # This must be done on plot_df as it determines the actual data range
-            if log_x_scatter or log_y_scatter:
-                scatter_df = scatter_df[
-                    (scatter_df["REFRESH_DURATION_SEC"] > 0)
-                    & (scatter_df["X_AXIS_METRIC_VALUE"] > 0)
-                ].copy()
-                # If after filtering, the DataFrame becomes empty, handle it
-                if scatter_df.empty:
-                    st.info(
-                        f"No positive data points available for scatter plot with selected log scales after filters. Please adjust filters.",
-                        icon="ℹ️",
-                    )
-                    return # Exit this block
-
-
-            if not scatter_df.empty:
-                scatter_df["REFRESH_START_TIME_FMT"] = (
-                    scatter_df["REFRESH_START_TIME_DT"]
-                    .dt.strftime("%Y-%m-%d %H:%M:%S")
-                    .fillna("N/A")
-                )
-                scatter_df["REFRESH_END_TIME_FMT"] = (
-                    scatter_df["REFRESH_END_TIME_DT"]
-                    .dt.strftime("%Y-%m-%d %H:%M:%S")
-                    .fillna("N/A")
-                )
-                # Ensure the hover duration always uses the original total_seconds for formatting
-                scatter_df[
-                    "REFRESH_DURATION_FMT_HOVER"
-                ] = format_seconds_to_readable(
-                    scatter_df["REFRESH_DURATION_SEC"], time_format_option
-                )
-                scatter_df["X_AXIS_METRIC_FMT_HOVER"] = scatter_df[
-                    "X_AXIS_METRIC_VALUE"
-                ].apply(lambda x: f"{int(x):,}")
-
-
-                fig_duration_vs_rows = px.scatter(
-                    scatter_df,
-                    x="X_AXIS_METRIC_VALUE",
-                    y="REFRESH_DURATION_SEC",
-                    color="STATE",
-                    labels={
-                        "REFRESH_DURATION_SEC": f"Duration ({time_format_option})",
-                        "X_AXIS_METRIC_VALUE": selected_row_metric_for_scatter,
-                    },
-                    color_discrete_map={
-                        "SUCCEEDED": "blue",
-                        "FAILED": "red",
-                        "UPSTREAM_FAILED": "darkred",
-                        "CANCELLED": "orange",
-                        "EXECUTING": "green",
-                        "SCHEDULED": "grey",
-                        "UNKNOWN": "purple",
-                    }
-                )
-
-                fig_duration_vs_rows.update_traces(
-                    hovertemplate=(
-                        "<b>Table: %{customdata[0]}</b><br>"
-                        "State: %{customdata[1]}<br>"
-                        f"{selected_row_metric_for_scatter}: %{{customdata[2]}}<br>"
-                        "Duration: %{customdata[3]}<br>"
-                        "Action: %{customdata[4]}<br>"
-                        "Start: %{customdata[5]}<br>"
-                        "End: %{customdata[6]}<br>"
-                        "Message: %{customdata[7]}<br>"
-                        "<extra></extra>"
-                    ),
-                    customdata=np.stack(
-                        (
-                            scatter_df["QUALIFIED_NAME"],
-                            scatter_df["STATE"],
-                            scatter_df["X_AXIS_METRIC_FMT_HOVER"],
-                            scatter_df["REFRESH_DURATION_FMT_HOVER"],
-                            scatter_df["REFRESH_ACTION"],
-                            scatter_df["REFRESH_START_TIME_FMT"],
-                            scatter_df["REFRESH_END_TIME_FMT"],
-                            scatter_df["STATE_MESSAGE"],
-                        ),
-                        axis=-1,
-                    ),
-                )
-                fig_duration_vs_rows.update_layout(
-                    legend=dict(
-                        orientation="h",
-                        yanchor="bottom",
-                        y=1.02,
-                        xanchor="right",
-                        x=1
-                    )
-                )
-
-                # --- START: FIX FOR LINEAR AXIS SCALING ---
-                # Default to autorange=True
-                fig_duration_vs_rows.update_xaxes(autorange=True)
-                fig_duration_vs_rows.update_yaxes(autorange=True)
-
-                if log_x_scatter:
-                    # If log_x is active, override autorange for log scale
-                    fig_duration_vs_rows.update_xaxes(type="log", automargin=True)
-                
-                if log_y_scatter:
-                    # If log_y is active, override autorange for log scale
-                    fig_duration_vs_rows.update_yaxes(type="log", automargin=True)
-                
-                # Check for zero sums after potential log filtering to avoid warning unless relevant
-                if log_x_scatter and scatter_df['X_AXIS_METRIC_VALUE'].sum() == 0:
-                    st.warning(f"Cannot apply log X-axis: All '{selected_row_metric_for_scatter}' values are zero after filtering.", icon="⚠️")
-                if log_y_scatter and scatter_df['REFRESH_DURATION_SEC'].sum() == 0:
-                    st.warning(f"Cannot apply log Y-axis: All 'Duration' values are zero after filtering.", icon="⚠️")
-                # --- END: FIX FOR LINEAR AXIS SCALING ---
-
-
-                st.plotly_chart(
-                    fig_duration_vs_rows, use_container_width=True
-                )
-            else: # This branch now handles cases where scatter_df became empty *before* plotting
-                st.info(
-                    f"No valid data points available for Refresh Duration vs. {selected_row_metric_for_scatter} scatter plot after filters (considering 'NO_DATA' exclusion and log scale requirements). Please adjust filters.",
-                    icon="ℹ️",
-                )
-        else:
-            st.info(
-                "Necessary columns for Refresh Duration vs. Rows Processed analysis not available or no data after filters.",
-                icon="ℹ️",
+            scatter_df["REFRESH_START_TIME_FMT"] = (
+                scatter_df["REFRESH_START_TIME_DT"]
+                .dt.strftime("%Y-%m-%d %H:%M:%S")
+                .fillna("N/A")
             )
+            scatter_df["REFRESH_END_TIME_FMT"] = (
+                scatter_df["REFRESH_END_TIME_DT"]
+                .dt.strftime("%Y-%m-%d %H:%M:%S")
+                .fillna("N/A")
+            )
+            scatter_df[
+                "REFRESH_DURATION_FMT_HOVER"
+            ] = format_seconds_to_readable(
+                scatter_df["REFRESH_DURATION_SEC"], time_format_option
+            )
+            scatter_df["X_AXIS_METRIC_FMT_HOVER"] = scatter_df[
+                "X_AXIS_METRIC_VALUE"
+            ].apply(lambda x: f"{int(x):,}")
+            # NEW: Truncate long state messages for cleaner tooltips
+            scatter_df["STATE_MESSAGE_TRUNC"] = (
+                scatter_df["STATE_MESSAGE"].str.slice(0, 100).fillna("N/A")
+            )
+            scatter_df.loc[
+                scatter_df["STATE_MESSAGE"].str.len() > 100,
+                "STATE_MESSAGE_TRUNC",
+            ] += "..."
+
+            fig_duration_vs_rows = px.scatter(
+                scatter_df,
+                x="X_AXIS_METRIC_VALUE",
+                y="REFRESH_DURATION_SEC",
+                color="STATE",
+                labels={
+                    "REFRESH_DURATION_SEC": f"Duration ({time_format_option})",
+                    "X_AXIS_METRIC_VALUE": selected_row_metric_for_scatter,
+                },
+                color_discrete_map={
+                    "SUCCEEDED": "blue",
+                    "FAILED": "red",
+                    "UPSTREAM_FAILED": "darkred",
+                    "CANCELLED": "orange",
+                    "EXECUTING": "green",
+                    "SCHEDULED": "grey",
+                    "UNKNOWN": "purple",
+                },
+            )
+
+            fig_duration_vs_rows.update_traces(
+                hovertemplate=(
+                    "<b>Table: %{customdata[0]}</b><br>"
+                    "State: %{customdata[1]}<br>"
+                    f"{selected_row_metric_for_scatter}: %{{customdata[2]}}<br>"
+                    "Duration: %{customdata[3]}<br>"
+                    "Action: %{customdata[4]}<br>"
+                    "Start: %{customdata[5]}<br>"
+                    "End: %{customdata[6]}<br>"
+                    "Message: %{customdata[7]}<br>"
+                    "<extra></extra>"
+                ),
+                customdata=np.stack(
+                    (
+                        scatter_df["QUALIFIED_NAME"],
+                        scatter_df["STATE"],
+                        scatter_df["X_AXIS_METRIC_FMT_HOVER"],
+                        scatter_df["REFRESH_DURATION_FMT_HOVER"],
+                        scatter_df["REFRESH_ACTION"],
+                        scatter_df["REFRESH_START_TIME_FMT"],
+                        scatter_df["REFRESH_END_TIME_FMT"],
+                        scatter_df["STATE_MESSAGE_TRUNC"], # Using truncated message
+                    ),
+                    axis=-1,
+                ),
+            )
+
+            # --- REVISED: Layout and Axis Configuration ---
+            fig_duration_vs_rows.update_layout(
+                legend=dict(
+                    title_text="State",
+                    orientation="h",
+                    yanchor="bottom",
+                    y=1.02,
+                    xanchor="right",
+                    x=1,
+                ),
+                margin=dict(l=50, r=20, t=40, b=50), # Consistent margins
+            )
+
+            # FIX: Correctly toggle between log and linear scales
+            if log_x_scatter:
+                fig_duration_vs_rows.update_xaxes(type="log", automargin=True)
+            else:
+                fig_duration_vs_rows.update_xaxes(
+                    type="linear", automargin=True
+                )
+
+            if log_y_scatter:
+                fig_duration_vs_rows.update_yaxes(type="log", automargin=True)
+            else:
+                fig_duration_vs_rows.update_yaxes(
+                    type="linear", automargin=True
+                )
+
+            st.plotly_chart(fig_duration_vs_rows, use_container_width=True)
+
+    else:
+        st.info(
+            "Necessary columns for this analysis are not available.",
+            icon="ℹ️",
+        )
