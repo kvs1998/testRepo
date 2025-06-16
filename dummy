@@ -1,29 +1,7 @@
-st.divider()
+# Chart 3: Refresh Duration Trend & Refresh Duration vs. Rows Processed (Side-by-side)
+    chart_cols_pair2 = st.columns([1, 1]) # Main two columns
 
-    # --- Performance & Efficiency Analysis ---
-    # Moved description to tooltip for cleanliness
-    st.markdown(
-        """
-        <div class="tooltip-container">
-            <h3>Performance & Efficiency Analysis
-                <span class="info-icon" title="Dive into the duration of refreshes and how they relate to the volume of data processed, along with various distributions.">
-                    &#9432;
-                </span>
-            </h3>
-            <span class="tooltiptext">
-                This section helps identify performance bottlenecks and inefficiencies in dynamic table refreshes.
-                It visualizes refresh duration trends, the correlation between duration and data changes,
-                and the distribution of refresh times. Also provides a summary of row/partition changes per refresh action.
-            </span>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    # Chart 3: Refresh Duration Trend & Refresh Duration vs. Rows Processed (Side-by-side)
-    chart_cols_pair2 = st.columns([1, 1])
-
-    with chart_cols_pair2[0]:
+    with chart_cols_pair2[0]: # LEFT COLUMN: Refresh Duration Trend
         cols_chart_header = st.columns(
             [0.8, 0.2]
         )  # Internal columns for title and checkbox
@@ -64,7 +42,7 @@ st.divider()
             )
             fig_duration_trend.update_layout(
                 title_text="",
-                legend=dict( # Moved legend to top for cleanliness
+                legend=dict(
                     orientation="h",
                     yanchor="bottom",
                     y=1.02,
@@ -73,9 +51,7 @@ st.divider()
                 )
             )
 
-            # This log scale was already correctly applied to the Y-axis.
             if use_log_scale_duration_trend:
-                # Ensure there are positive values to plot on a log scale
                 if duration_trend_df[['Mean Duration', 'Median Duration', 'P95 Duration']].sum().sum() > 0:
                     fig_duration_trend.update_yaxes(
                         type="log", title="Duration (Log Scale)", rangemode="tozero"
@@ -87,7 +63,6 @@ st.divider()
                 else:
                     st.warning("Cannot apply log scale: All duration metrics are zero for the selected period.", icon="⚠️")
 
-
             st.plotly_chart(fig_duration_trend, use_container_width=True)
         else:
             st.info(
@@ -95,9 +70,8 @@ st.divider()
                 icon="ℹ️",
             )
 
-    with chart_cols_pair2[
-        1
-    ]:  # Refresh Duration vs. Rows Processed (Scatter Plot)
+    with chart_cols_pair2[1]: # RIGHT COLUMN: Refresh Duration vs. Rows Processed
+        # Headers and initial write
         st.markdown(
             "<p style='font-size:16px;'><b>Refresh Duration vs. Rows Processed</b></p>",
             unsafe_allow_html=True,
@@ -129,11 +103,24 @@ st.divider()
             "REFRESH_DURATION_SEC" in filtered_history_df.columns
             and available_row_metrics_scatter
         ):
-            selected_row_metric_for_scatter = st.selectbox(
-                "Select X-axis Row Metric:",
-                options=list(available_row_metrics_scatter.keys()),
-                key="scatter_x_axis_metric",
-            )
+            # --- START: ALIGNMENT FIX (Nested Columns) ---
+            # Create a row for the selectbox and log scale checkboxes
+            scatter_controls_col1, scatter_controls_col2, scatter_controls_col3 = st.columns([2, 1, 1])
+
+            with scatter_controls_col1:
+                selected_row_metric_for_scatter = st.selectbox(
+                    "X-axis Metric:", # Shorter label for better fit
+                    options=list(available_row_metrics_scatter.keys()),
+                    key="scatter_x_axis_metric"
+                )
+            
+            with scatter_controls_col2:
+                log_x_scatter = st.checkbox("Log X-axis", key="log_x_scatter_dt_state")
+            
+            with scatter_controls_col3:
+                log_y_scatter = st.checkbox("Log Y-axis", key="log_y_scatter_dt_state")
+            # --- END: ALIGNMENT FIX ---
+
 
             cols_to_sum = available_row_metrics_scatter[
                 selected_row_metric_for_scatter
@@ -156,15 +143,8 @@ st.divider()
                 if col in scatter_df.columns:
                     scatter_df[col] = scatter_df[col].fillna("N/A")
 
-            log_scales_cols = st.columns([1, 1])
-            with log_scales_cols[0]:
-                log_x_scatter = st.checkbox(
-                    "Log Scale X-axis", key="log_x_scatter_dt_state"
-                )
-            with log_scales_cols[1]:
-                log_y_scatter = st.checkbox(
-                    "Log Scale Y-axis", key="log_y_scatter_dt_state"
-                )
+            # Remove the old log_scales_cols and the checkboxes within them,
+            # as they are now defined above.
 
             if log_x_scatter or log_y_scatter:
                 scatter_df = scatter_df[
@@ -239,7 +219,7 @@ st.divider()
                     ),
                 )
                 fig_duration_vs_rows.update_layout(
-                    legend=dict( # Moved legend to top for cleanliness
+                    legend=dict(
                         orientation="h",
                         yanchor="bottom",
                         y=1.02,
@@ -247,7 +227,6 @@ st.divider()
                         x=1
                     )
                 )
-
 
                 if log_x_scatter:
                     fig_duration_vs_rows.update_xaxes(type="log")
@@ -265,191 +244,5 @@ st.divider()
         else:
             st.info(
                 "Necessary columns for Refresh Duration vs. Rows Processed analysis not available or no data after filters.",
-                icon="ℹ️",
-            )
-
-    st.divider()
-
-    # Chart 5: Refresh Duration Distribution (Histogram) and Row Change Overview (Grouped Bar Chart) side-by-side
-    chart_cols_pair3 = st.columns([1, 1])
-
-    with chart_cols_pair3[0]:  # Refresh Duration Distribution (Histogram)
-        cols_chart_header = st.columns(
-            [0.8, 0.2]
-        )  # Internal columns for title and checkbox
-        with cols_chart_header[0]:
-            st.markdown(
-                "<p style='font-size:16px;'><b>Refresh Duration Distribution</b></p>",
-                unsafe_allow_html=True,
-            )
-        with cols_chart_header[1]:
-            use_log_scale_duration_hist = st.checkbox(
-                "Log Scale X-axis", key="log_scale_duration_hist_dt_state"
-            )
-        st.write("Distribution of refresh durations.")
-
-        if (
-            "REFRESH_DURATION_SEC" in filtered_history_df.columns
-            and not filtered_history_df["REFRESH_DURATION_SEC"].empty
-        ):
-            duration_data = (
-                filtered_history_df["REFRESH_DURATION_SEC"].dropna().copy()
-            )
-
-            plot_data_for_hist = duration_data
-            histogram_kwargs = {}
-            is_data_available = True
-
-            if use_log_scale_duration_hist:
-                plot_data_for_hist = duration_data[duration_data > 0]
-                if not plot_data_for_hist.empty:
-                    histogram_kwargs["log_x"] = True
-                    st.info(
-                        "Logarithmic scale applied to X-axis. Zero durations are excluded.",
-                        icon="ℹ️",
-                    )
-                else:
-                    is_data_available = False # Set flag if no positive data for log scale
-                    st.info("No positive refresh duration data available for log scale histogram.", icon="ℹ️")
-
-
-            if is_data_available and not plot_data_for_hist.empty:
-                fig_duration_hist = px.histogram(
-                    plot_data_for_hist,
-                    x="REFRESH_DURATION_SEC",
-                    nbins=20,
-                    labels={
-                        "REFRESH_DURATION_SEC": f"Duration ({time_format_option})"
-                    },
-                    text_auto=False,
-                    **histogram_kwargs
-                )
-                fig_duration_hist.update_layout(
-                    bargap=0.1,
-                    title_text="",
-                    legend=dict( # Moved legend to top for cleanliness
-                        orientation="h",
-                        yanchor="bottom",
-                        y=1.02,
-                        xanchor="right",
-                        x=1
-                    )
-                )
-
-                if (
-                    not use_log_scale_duration_hist
-                    and time_format_option != "seconds"
-                ):
-                    min_x_val = plot_data_for_hist.min()
-                    max_x_val = plot_data_for_hist.max()
-                    if max_x_val > 0:
-                        tick_values = np.linspace(
-                            min_x_val, max_x_val, num=5, endpoint=True
-                        )
-                        tick_texts = format_seconds_to_readable(
-                            pd.Series(tick_values), time_format_option
-                        ).tolist()
-                        fig_duration_hist.update_xaxes(
-                            tickvals=tick_values, ticktext=tick_texts
-                        )
-                
-                st.plotly_chart(fig_duration_hist, use_container_width=True)
-            elif not is_data_available: # This condition is for when data became empty specifically due to log scale filter
-                pass # Info message already handled above
-            else: # This condition for general case of no data
-                st.info(
-                    "No valid refresh duration data to display for histogram after filters.",
-                    icon="ℹ️",
-                )
-        else:
-            st.info("No REFRESH_DURATION_SEC data available.", icon="ℹ️")
-
-
-    with chart_cols_pair3[1]:  # Row Change Overview (Grouped Bar Chart)
-        cols_chart_header = st.columns(
-            [0.8, 0.2]
-        )  # Internal columns for title and checkbox
-        with cols_chart_header[0]:
-            st.markdown(
-                "<p style='font-size:16px;'><b>Row Change Overview</b></p>",
-                unsafe_allow_html=True,
-            )
-        with cols_chart_header[1]:
-            use_log_scale_row_change = st.checkbox(
-                "Log Scale Y-axis", key="log_scale_row_change_dt_state"
-            )
-        st.write("Total inserted, deleted, and copied rows per refresh action.")
-
-        row_change_analysis_cols = [
-            "NUMINSERTEDROWS",
-            "NUMDELETEDROWS",
-            "NUMCOPIEDROWS",
-            "NUMADDEDPARTITIONS",
-            "NUMREMOVEDPARTITIONS",
-        ]
-
-        available_row_analysis_cols = [
-            col
-            for col in row_change_analysis_cols
-            if col in filtered_history_df.columns
-        ]
-
-        if available_row_analysis_cols and not filtered_history_df.empty:
-            row_change_summary = (
-                filtered_history_df.groupby("REFRESH_ACTION")[
-                    available_row_analysis_cols
-                ]
-                .sum()
-                .reset_index()
-            )
-
-            if not row_change_summary.empty:
-                row_change_melted = row_change_summary.melt(
-                    id_vars="REFRESH_ACTION",
-                    value_vars=available_row_analysis_cols,
-                    var_name="Row_Metric",
-                    value_name="Count",
-                )
-                fig_row_change = px.bar(
-                    row_change_melted,
-                    x="REFRESH_ACTION",
-                    y="Count",
-                    color="Row_Metric",
-                    barmode="group",
-                    labels={
-                        "REFRESH_ACTION": "Refresh Action",
-                        "Count": "Number of Rows",
-                    },
-                )
-                fig_row_change.update_layout(
-                    title_text="",
-                    legend=dict( # Moved legend to top for cleanliness
-                        orientation="h",
-                        yanchor="bottom",
-                        y=1.02,
-                        xanchor="right",
-                        x=1
-                    )
-                )
-
-                if use_log_scale_row_change:
-                    # Ensure there are positive values to plot on a log scale
-                    if row_change_melted['Count'].sum() > 0:
-                        fig_row_change.update_yaxes(
-                            type="log", rangemode="tozero"
-                        )
-                        st.info(
-                            "Logarithmic scale applied to Y-axis. Zero counts are handled gracefully.",
-                            icon="ℹ️",
-                        )
-                    else:
-                         st.warning("Cannot apply log scale: All row change counts are zero for the selected period.", icon="⚠️")
-
-                st.plotly_chart(fig_row_change, use_container_width=True)
-            else:
-                st.info("No row change data after aggregation.", icon="ℹ️")
-        else:
-            st.info(
-                "Row change statistics (NUMINSERTEDROWS, etc.) not available or no data after filters.",
                 icon="ℹ️",
             )
