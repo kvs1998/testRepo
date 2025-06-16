@@ -1,68 +1,455 @@
-with chart_cols_pair4[0]:  # Daily / Hourly Failure Count Trend
-        cols_chart_header = st.columns([0.8, 0.2])
+st.divider()
+
+    # --- Performance & Efficiency Analysis ---
+    # Moved description to tooltip for cleanliness
+    st.markdown(
+        """
+        <div class="tooltip-container">
+            <h3>Performance & Efficiency Analysis
+                <span class="info-icon" title="Dive into the duration of refreshes and how they relate to the volume of data processed, along with various distributions.">
+                    &#9432;
+                </span>
+            </h3>
+            <span class="tooltiptext">
+                This section helps identify performance bottlenecks and inefficiencies in dynamic table refreshes.
+                It visualizes refresh duration trends, the correlation between duration and data changes,
+                and the distribution of refresh times. Also provides a summary of row/partition changes per refresh action.
+            </span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # Chart 3: Refresh Duration Trend & Refresh Duration vs. Rows Processed (Side-by-side)
+    chart_cols_pair2 = st.columns([1, 1])
+
+    with chart_cols_pair2[0]:
+        cols_chart_header = st.columns(
+            [0.8, 0.2]
+        )  # Internal columns for title and checkbox
         with cols_chart_header[0]:
-            st.markdown("<p style='font-size:16px;'><b>Daily Failure Count Trend</b></p>", unsafe_allow_html=True)
+            st.markdown(
+                "<p style='font-size:16px;'><b>Refresh Duration Trend</b></p>",
+                unsafe_allow_html=True,
+            )
         with cols_chart_header[1]:
-            use_log_scale_failure_trend = st.checkbox("Log Scale Y-axis", key="log_scale_failure_trend_dt_state")
-        st.write("Count of failed/cancelled refreshes over time. Gaps indicate no failures on those days.") # Clarified description
+            use_log_scale_duration_trend = st.checkbox(
+                "Log Scale Y-axis", key="log_scale_duration_trend_dt_state"
+            )
+        st.write("Average, Median, and P95 refresh duration over time.")
 
-        # --- START OF FIX ---
-        if not filtered_history_df.empty:
-            failed_trend_df = filtered_history_df[
-                filtered_history_df['STATE'].isin(['FAILED', 'CANCELLED', 'UPSTREAM_FAILED'])
-            ].copy()
+        if (
+            "REFRESH_DURATION_SEC" in filtered_history_df.columns
+            and not filtered_history_df["REFRESH_DURATION_SEC"].empty
+        ):
+            duration_trend_df = (
+                filtered_history_df.groupby(
+                    pd.Grouper(key="DATA_TIMESTAMP_DT", freq="D")
+                )["REFRESH_DURATION_SEC"]
+                .agg(["mean", "median", lambda x: x.quantile(0.95)])
+                .reset_index()
+            )
+            duration_trend_df.columns = [
+                "Date",
+                "Mean Duration",
+                "Median Duration",
+                "P95 Duration",
+            ]
 
-            # Ensure start_date_filter and end_date_filter are datetime objects for pd.date_range
-            start_date_dt = pd.to_datetime(start_date_filter).normalize()
-            end_date_dt = pd.to_datetime(end_date_filter).normalize()
-
-            # Create a full date range for the X-axis
-            full_date_range = pd.DataFrame({
-                'Date': pd.date_range(start=start_date_dt, end=end_date_dt, freq='D')
-            })
-
-            if not failed_trend_df.empty:
-                failure_counts_daily = failed_trend_df.groupby(
-                    pd.Grouper(key='DATA_TIMESTAMP_DT', freq='D')
-                ).size().reset_index(name='Failure Count')
-                failure_counts_daily.rename(columns={'DATA_TIMESTAMP_DT': 'Date'}, inplace=True)
-
-                # Merge with the full date range to ensure all dates are present
-                # Fill NaN (where no failures occurred) with 0
-                plot_data = pd.merge(
-                    full_date_range,
-                    failure_counts_daily,
-                    on='Date',
-                    how='left'
-                ).fillna(0) # Crucial: Fill NaN with 0 for "no failures"
-            else:
-                # If there are no failures at all in the filtered_history_df,
-                # create a DataFrame with 0 failures for the entire range.
-                plot_data = full_date_range.copy()
-                plot_data['Failure Count'] = 0
-
-            fig_failure_trend = px.line(
-                plot_data, # Use the plot_data with all dates
-                x='Date',
-                y='Failure Count',
-                labels={'Failure Count': 'Number of Failures'},
-                # Add line_shape='hv' (h-v for horizontal-vertical) for stepped appearance
-                # Or keep default for interpolated line, depending on preference.
-                # Setting mode='lines' explicitly can also help ensure the line is drawn
-                # mode='lines'
+            fig_duration_trend = px.line(
+                duration_trend_df,
+                x="Date",
+                y=["Mean Duration", "Median Duration", "P95 Duration"],
+                labels={"value": f"Duration ({time_format_option})"},
+            )
+            fig_duration_trend.update_layout(
+                title_text="",
+                legend=dict( # Moved legend to top for cleanliness
+                    orientation="h",
+                    yanchor="bottom",
+                    y=1.02,
+                    xanchor="right",
+                    x=1
+                )
             )
 
-            if use_log_scale_failure_trend:
-                # Only apply log scale if there's any non-zero failure data to show.
-                # If all 'Failure Count' are 0, log scale will cause issues.
-                if plot_data['Failure Count'].sum() > 0:
-                    fig_failure_trend.update_yaxes(type='log', rangemode='tozero')
-                    st.info("Logarithmic scale applied to Y-axis. Zero counts are handled gracefully.", icon="ℹ️")
+            # This log scale was already correctly applied to the Y-axis.
+            if use_log_scale_duration_trend:
+                # Ensure there are positive values to plot on a log scale
+                if duration_trend_df[['Mean Duration', 'Median Duration', 'P95 Duration']].sum().sum() > 0:
+                    fig_duration_trend.update_yaxes(
+                        type="log", title="Duration (Log Scale)", rangemode="tozero"
+                    )
+                    st.info(
+                        "Logarithmic scale applied to Y-axis. Zero/negative values are handled gracefully.",
+                        icon="ℹ️",
+                    )
                 else:
-                    st.warning("Cannot apply log scale: All failure counts are zero for the selected period.", icon="⚠️")
+                    st.warning("Cannot apply log scale: All duration metrics are zero for the selected period.", icon="⚠️")
 
 
-            st.plotly_chart(fig_failure_trend, use_container_width=True)
+            st.plotly_chart(fig_duration_trend, use_container_width=True)
         else:
-            st.info("No refresh history data available to plot failure trends.", icon="ℹ️") # Updated message
-        # --- END OF FIX ---
+            st.info(
+                "No REFRESH_DURATION_SEC data available for trend analysis.",
+                icon="ℹ️",
+            )
+
+    with chart_cols_pair2[
+        1
+    ]:  # Refresh Duration vs. Rows Processed (Scatter Plot)
+        st.markdown(
+            "<p style='font-size:16px;'><b>Refresh Duration vs. Rows Processed</b></p>",
+            unsafe_allow_html=True,
+        )
+        st.write("Examine if duration correlates with data volume. Helps identify inefficiencies.")
+
+        all_row_metrics_scatter = {
+            "Total Rows Changed": [
+                "NUMINSERTEDROWS",
+                "NUMDELETEDROWS",
+                "NUMCOPIEDROWS",
+                "NUMADDEDPARTITIONS",
+                "NUMREMOVEDPARTITIONS",
+            ],
+            "Inserted Rows": ["NUMINSERTEDROWS"],
+            "Deleted Rows": ["NUMDELETEDROWS"],
+            "Copied Rows": ["NUMCOPIEDROWS"],
+            "Added Partitions": ["NUMADDEDPARTITIONS"],
+            "Removed Partitions": ["NUMREMOVEDPARTITIONS"],
+        }
+
+        available_row_metrics_scatter = {
+            label: cols
+            for label, cols in all_row_metrics_scatter.items()
+            if all(c in filtered_history_df.columns for c in cols)
+        }
+
+        if (
+            "REFRESH_DURATION_SEC" in filtered_history_df.columns
+            and available_row_metrics_scatter
+        ):
+            selected_row_metric_for_scatter = st.selectbox(
+                "Select X-axis Row Metric:",
+                options=list(available_row_metrics_scatter.keys()),
+                key="scatter_x_axis_metric",
+            )
+
+            cols_to_sum = available_row_metrics_scatter[
+                selected_row_metric_for_scatter
+            ]
+            scatter_df = filtered_history_df.copy()
+            scatter_df["X_AXIS_METRIC_VALUE"] = scatter_df[cols_to_sum].sum(
+                axis=1
+            )
+
+            scatter_df = scatter_df.dropna(
+                subset=["REFRESH_DURATION_SEC", "X_AXIS_METRIC_VALUE"]
+            ).copy()
+
+            for col in [
+                "STATE_MESSAGE",
+                "REFRESH_ACTION",
+                "QUALIFIED_NAME",
+                "STATE",
+            ]:
+                if col in scatter_df.columns:
+                    scatter_df[col] = scatter_df[col].fillna("N/A")
+
+            log_scales_cols = st.columns([1, 1])
+            with log_scales_cols[0]:
+                log_x_scatter = st.checkbox(
+                    "Log Scale X-axis", key="log_x_scatter_dt_state"
+                )
+            with log_scales_cols[1]:
+                log_y_scatter = st.checkbox(
+                    "Log Scale Y-axis", key="log_y_scatter_dt_state"
+                )
+
+            if log_x_scatter or log_y_scatter:
+                scatter_df = scatter_df[
+                    (scatter_df["REFRESH_DURATION_SEC"] > 0)
+                    & (scatter_df["X_AXIS_METRIC_VALUE"] > 0)
+                ].copy()
+
+            if not scatter_df.empty:
+                scatter_df["REFRESH_START_TIME_FMT"] = (
+                    scatter_df["REFRESH_START_TIME_DT"]
+                    .dt.strftime("%Y-%m-%d %H:%M:%S")
+                    .fillna("N/A")
+                )
+                scatter_df["REFRESH_END_TIME_FMT"] = (
+                    scatter_df["REFRESH_END_TIME_DT"]
+                    .dt.strftime("%Y-%m-%d %H:%M:%S")
+                    .fillna("N/A")
+                )
+                scatter_df[
+                    "REFRESH_DURATION_FMT_HOVER"
+                ] = format_seconds_to_readable(
+                    scatter_df["REFRESH_DURATION_SEC"], time_format_option
+                )
+                scatter_df["X_AXIS_METRIC_FMT_HOVER"] = scatter_df[
+                    "X_AXIS_METRIC_VALUE"
+                ].apply(lambda x: f"{int(x):,}")
+
+                fig_duration_vs_rows = px.scatter(
+                    scatter_df,
+                    x="X_AXIS_METRIC_VALUE",
+                    y="REFRESH_DURATION_SEC",
+                    color="STATE",
+                    labels={
+                        "REFRESH_DURATION_SEC": f"Duration ({time_format_option})",
+                        "X_AXIS_METRIC_VALUE": selected_row_metric_for_scatter,
+                    },
+                    color_discrete_map={
+                        "SUCCEEDED": "blue",
+                        "FAILED": "red",
+                        "UPSTREAM_FAILED": "darkred",
+                        "CANCELLED": "orange",
+                        "EXECUTING": "green",
+                        "SCHEDULED": "grey",
+                        "UNKNOWN": "purple",
+                    },
+                )
+
+                fig_duration_vs_rows.update_traces(
+                    hovertemplate=(
+                        "<b>Table: %{customdata[0]}</b><br>"
+                        "State: %{customdata[1]}<br>"
+                        f"{selected_row_metric_for_scatter}: %{{customdata[2]}}<br>"
+                        "Duration: %{customdata[3]}<br>"
+                        "Action: %{customdata[4]}<br>"
+                        "Start: %{customdata[5]}<br>"
+                        "End: %{customdata[6]}<br>"
+                        "Message: %{customdata[7]}<br>"
+                        "<extra></extra>"
+                    ),
+                    customdata=np.stack(
+                        (
+                            scatter_df["QUALIFIED_NAME"],
+                            scatter_df["STATE"],
+                            scatter_df["X_AXIS_METRIC_FMT_HOVER"],
+                            scatter_df["REFRESH_DURATION_FMT_HOVER"],
+                            scatter_df["REFRESH_ACTION"],
+                            scatter_df["REFRESH_START_TIME_FMT"],
+                            scatter_df["REFRESH_END_TIME_FMT"],
+                            scatter_df["STATE_MESSAGE"],
+                        ),
+                        axis=-1,
+                    ),
+                )
+                fig_duration_vs_rows.update_layout(
+                    legend=dict( # Moved legend to top for cleanliness
+                        orientation="h",
+                        yanchor="bottom",
+                        y=1.02,
+                        xanchor="right",
+                        x=1
+                    )
+                )
+
+
+                if log_x_scatter:
+                    fig_duration_vs_rows.update_xaxes(type="log")
+                if log_y_scatter:
+                    fig_duration_vs_rows.update_yaxes(type="log")
+
+                st.plotly_chart(
+                    fig_duration_vs_rows, use_container_width=True
+                )
+            else:
+                st.info(
+                    f"No valid data for Refresh Duration vs. {selected_row_metric_for_scatter} scatter plot after filters (considering log scale requirements).",
+                    icon="ℹ️",
+                )
+        else:
+            st.info(
+                "Necessary columns for Refresh Duration vs. Rows Processed analysis not available or no data after filters.",
+                icon="ℹ️",
+            )
+
+    st.divider()
+
+    # Chart 5: Refresh Duration Distribution (Histogram) and Row Change Overview (Grouped Bar Chart) side-by-side
+    chart_cols_pair3 = st.columns([1, 1])
+
+    with chart_cols_pair3[0]:  # Refresh Duration Distribution (Histogram)
+        cols_chart_header = st.columns(
+            [0.8, 0.2]
+        )  # Internal columns for title and checkbox
+        with cols_chart_header[0]:
+            st.markdown(
+                "<p style='font-size:16px;'><b>Refresh Duration Distribution</b></p>",
+                unsafe_allow_html=True,
+            )
+        with cols_chart_header[1]:
+            use_log_scale_duration_hist = st.checkbox(
+                "Log Scale X-axis", key="log_scale_duration_hist_dt_state"
+            )
+        st.write("Distribution of refresh durations.")
+
+        if (
+            "REFRESH_DURATION_SEC" in filtered_history_df.columns
+            and not filtered_history_df["REFRESH_DURATION_SEC"].empty
+        ):
+            duration_data = (
+                filtered_history_df["REFRESH_DURATION_SEC"].dropna().copy()
+            )
+
+            plot_data_for_hist = duration_data
+            histogram_kwargs = {}
+            is_data_available = True
+
+            if use_log_scale_duration_hist:
+                plot_data_for_hist = duration_data[duration_data > 0]
+                if not plot_data_for_hist.empty:
+                    histogram_kwargs["log_x"] = True
+                    st.info(
+                        "Logarithmic scale applied to X-axis. Zero durations are excluded.",
+                        icon="ℹ️",
+                    )
+                else:
+                    is_data_available = False # Set flag if no positive data for log scale
+                    st.info("No positive refresh duration data available for log scale histogram.", icon="ℹ️")
+
+
+            if is_data_available and not plot_data_for_hist.empty:
+                fig_duration_hist = px.histogram(
+                    plot_data_for_hist,
+                    x="REFRESH_DURATION_SEC",
+                    nbins=20,
+                    labels={
+                        "REFRESH_DURATION_SEC": f"Duration ({time_format_option})"
+                    },
+                    text_auto=False,
+                    **histogram_kwargs
+                )
+                fig_duration_hist.update_layout(
+                    bargap=0.1,
+                    title_text="",
+                    legend=dict( # Moved legend to top for cleanliness
+                        orientation="h",
+                        yanchor="bottom",
+                        y=1.02,
+                        xanchor="right",
+                        x=1
+                    )
+                )
+
+                if (
+                    not use_log_scale_duration_hist
+                    and time_format_option != "seconds"
+                ):
+                    min_x_val = plot_data_for_hist.min()
+                    max_x_val = plot_data_for_hist.max()
+                    if max_x_val > 0:
+                        tick_values = np.linspace(
+                            min_x_val, max_x_val, num=5, endpoint=True
+                        )
+                        tick_texts = format_seconds_to_readable(
+                            pd.Series(tick_values), time_format_option
+                        ).tolist()
+                        fig_duration_hist.update_xaxes(
+                            tickvals=tick_values, ticktext=tick_texts
+                        )
+                
+                st.plotly_chart(fig_duration_hist, use_container_width=True)
+            elif not is_data_available: # This condition is for when data became empty specifically due to log scale filter
+                pass # Info message already handled above
+            else: # This condition for general case of no data
+                st.info(
+                    "No valid refresh duration data to display for histogram after filters.",
+                    icon="ℹ️",
+                )
+        else:
+            st.info("No REFRESH_DURATION_SEC data available.", icon="ℹ️")
+
+
+    with chart_cols_pair3[1]:  # Row Change Overview (Grouped Bar Chart)
+        cols_chart_header = st.columns(
+            [0.8, 0.2]
+        )  # Internal columns for title and checkbox
+        with cols_chart_header[0]:
+            st.markdown(
+                "<p style='font-size:16px;'><b>Row Change Overview</b></p>",
+                unsafe_allow_html=True,
+            )
+        with cols_chart_header[1]:
+            use_log_scale_row_change = st.checkbox(
+                "Log Scale Y-axis", key="log_scale_row_change_dt_state"
+            )
+        st.write("Total inserted, deleted, and copied rows per refresh action.")
+
+        row_change_analysis_cols = [
+            "NUMINSERTEDROWS",
+            "NUMDELETEDROWS",
+            "NUMCOPIEDROWS",
+            "NUMADDEDPARTITIONS",
+            "NUMREMOVEDPARTITIONS",
+        ]
+
+        available_row_analysis_cols = [
+            col
+            for col in row_change_analysis_cols
+            if col in filtered_history_df.columns
+        ]
+
+        if available_row_analysis_cols and not filtered_history_df.empty:
+            row_change_summary = (
+                filtered_history_df.groupby("REFRESH_ACTION")[
+                    available_row_analysis_cols
+                ]
+                .sum()
+                .reset_index()
+            )
+
+            if not row_change_summary.empty:
+                row_change_melted = row_change_summary.melt(
+                    id_vars="REFRESH_ACTION",
+                    value_vars=available_row_analysis_cols,
+                    var_name="Row_Metric",
+                    value_name="Count",
+                )
+                fig_row_change = px.bar(
+                    row_change_melted,
+                    x="REFRESH_ACTION",
+                    y="Count",
+                    color="Row_Metric",
+                    barmode="group",
+                    labels={
+                        "REFRESH_ACTION": "Refresh Action",
+                        "Count": "Number of Rows",
+                    },
+                )
+                fig_row_change.update_layout(
+                    title_text="",
+                    legend=dict( # Moved legend to top for cleanliness
+                        orientation="h",
+                        yanchor="bottom",
+                        y=1.02,
+                        xanchor="right",
+                        x=1
+                    )
+                )
+
+                if use_log_scale_row_change:
+                    # Ensure there are positive values to plot on a log scale
+                    if row_change_melted['Count'].sum() > 0:
+                        fig_row_change.update_yaxes(
+                            type="log", rangemode="tozero"
+                        )
+                        st.info(
+                            "Logarithmic scale applied to Y-axis. Zero counts are handled gracefully.",
+                            icon="ℹ️",
+                        )
+                    else:
+                         st.warning("Cannot apply log scale: All row change counts are zero for the selected period.", icon="⚠️")
+
+                st.plotly_chart(fig_row_change, use_container_width=True)
+            else:
+                st.info("No row change data after aggregation.", icon="ℹ️")
+        else:
+            st.info(
+                "Row change statistics (NUMINSERTEDROWS, etc.) not available or no data after filters.",
+                icon="ℹ️",
+            )
