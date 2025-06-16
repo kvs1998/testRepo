@@ -1,76 +1,68 @@
-with chart_cols_pair3[0]:  # Refresh Duration Distribution (Histogram)
-        cols_chart_header = st.columns(
-            [0.8, 0.2]
-        )  # Internal columns for title and checkbox
+with chart_cols_pair4[0]:  # Daily / Hourly Failure Count Trend
+        cols_chart_header = st.columns([0.8, 0.2])
         with cols_chart_header[0]:
-            st.markdown(
-                "<p style='font-size:16px;'><b>Refresh Duration Distribution</b></p>",
-                unsafe_allow_html=True,
-            )
+            st.markdown("<p style='font-size:16px;'><b>Daily Failure Count Trend</b></p>", unsafe_allow_html=True)
         with cols_chart_header[1]:
-            use_log_scale_duration_hist = st.checkbox(
-                "Log Scale X-axis", key="log_scale_duration_hist_dt_state"
+            use_log_scale_failure_trend = st.checkbox("Log Scale Y-axis", key="log_scale_failure_trend_dt_state")
+        st.write("Count of failed/cancelled refreshes over time. Gaps indicate no failures on those days.") # Clarified description
+
+        # --- START OF FIX ---
+        if not filtered_history_df.empty:
+            failed_trend_df = filtered_history_df[
+                filtered_history_df['STATE'].isin(['FAILED', 'CANCELLED', 'UPSTREAM_FAILED'])
+            ].copy()
+
+            # Ensure start_date_filter and end_date_filter are datetime objects for pd.date_range
+            start_date_dt = pd.to_datetime(start_date_filter).normalize()
+            end_date_dt = pd.to_datetime(end_date_filter).normalize()
+
+            # Create a full date range for the X-axis
+            full_date_range = pd.DataFrame({
+                'Date': pd.date_range(start=start_date_dt, end=end_date_dt, freq='D')
+            })
+
+            if not failed_trend_df.empty:
+                failure_counts_daily = failed_trend_df.groupby(
+                    pd.Grouper(key='DATA_TIMESTAMP_DT', freq='D')
+                ).size().reset_index(name='Failure Count')
+                failure_counts_daily.rename(columns={'DATA_TIMESTAMP_DT': 'Date'}, inplace=True)
+
+                # Merge with the full date range to ensure all dates are present
+                # Fill NaN (where no failures occurred) with 0
+                plot_data = pd.merge(
+                    full_date_range,
+                    failure_counts_daily,
+                    on='Date',
+                    how='left'
+                ).fillna(0) # Crucial: Fill NaN with 0 for "no failures"
+            else:
+                # If there are no failures at all in the filtered_history_df,
+                # create a DataFrame with 0 failures for the entire range.
+                plot_data = full_date_range.copy()
+                plot_data['Failure Count'] = 0
+
+            fig_failure_trend = px.line(
+                plot_data, # Use the plot_data with all dates
+                x='Date',
+                y='Failure Count',
+                labels={'Failure Count': 'Number of Failures'},
+                # Add line_shape='hv' (h-v for horizontal-vertical) for stepped appearance
+                # Or keep default for interpolated line, depending on preference.
+                # Setting mode='lines' explicitly can also help ensure the line is drawn
+                # mode='lines'
             )
-        st.write("Distribution of refresh durations.")
 
-        if (
-            "REFRESH_DURATION_SEC" in filtered_history_df.columns
-            and not filtered_history_df["REFRESH_DURATION_SEC"].empty
-        ):
-            duration_data = (
-                filtered_history_df["REFRESH_DURATION_SEC"].dropna().copy()
-            )
-
-            # --- START: REAL FINAL FIX ---
-            plot_data_for_hist = duration_data
-            histogram_kwargs = {} # Use this to pass log_x and other direct px args
-
-            if use_log_scale_duration_hist:
-                # Filter out non-positive values for log scale *before* plotting
-                plot_data_for_hist = duration_data[duration_data > 0]
-                if not plot_data_for_hist.empty:
-                    histogram_kwargs["log_x"] = True # Tell px.histogram to use log scale directly
-                    st.info(
-                        "Logarithmic scale applied to X-axis. Zero durations are excluded.",
-                        icon="ℹ️",
-                    )
+            if use_log_scale_failure_trend:
+                # Only apply log scale if there's any non-zero failure data to show.
+                # If all 'Failure Count' are 0, log scale will cause issues.
+                if plot_data['Failure Count'].sum() > 0:
+                    fig_failure_trend.update_yaxes(type='log', rangemode='tozero')
+                    st.info("Logarithmic scale applied to Y-axis. Zero counts are handled gracefully.", icon="ℹ️")
                 else:
-                    # If all data becomes zero/negative after filtering, inform user and return
-                    st.info("No positive refresh duration data available for log scale histogram.", icon="ℹ️")
-                    return # Exit the function for this chart if no data for log scale
+                    st.warning("Cannot apply log scale: All failure counts are zero for the selected period.", icon="⚠️")
 
-            if not plot_data_for_hist.empty: # Check if data is available after potential log scale filtering
-                fig_duration_hist = px.histogram(
-                    plot_data_for_hist,
-                    x="REFRESH_DURATION_SEC",
-                    nbins=20,
-                    labels={
-                        "REFRESH_DURATION_SEC": f"Duration ({time_format_option})"
-                    },
-                    text_auto=False,
-                    **histogram_kwargs # Apply log_x=True if set
-                )
-                fig_duration_hist.update_layout(bargap=0.1, title_text="")
 
-                # ONLY apply custom ticks if NOT using log scale AND format is not "seconds"
-                if not use_log_scale_duration_hist and time_format_option != "seconds":
-                    min_x_val = plot_data_for_hist.min()
-                    max_x_val = plot_data_for_hist.max()
-                    if max_x_val > 0: # Ensure there's a range to calculate ticks for
-                        tick_values = np.linspace(min_x_val, max_x_val, num=5, endpoint=True)
-                        tick_texts = format_seconds_to_readable(
-                            pd.Series(tick_values), time_format_option
-                        ).tolist()
-                        fig_duration_hist.update_xaxes(
-                            tickvals=tick_values, ticktext=tick_texts
-                        )
-                
-                st.plotly_chart(fig_duration_hist, use_container_width=True)
-            else: # This handles cases where plot_data_for_hist became empty (e.g. all 0s, or filters removed everything)
-                st.info(
-                    "No valid refresh duration data to display for histogram after filters.",
-                    icon="ℹ️",
-                )
-            # --- END: REAL FINAL FIX ---
+            st.plotly_chart(fig_failure_trend, use_container_width=True)
         else:
-            st.info("No REFRESH_DURATION_SEC data available.", icon="ℹ️")
+            st.info("No refresh history data available to plot failure trends.", icon="ℹ️") # Updated message
+        # --- END OF FIX ---
