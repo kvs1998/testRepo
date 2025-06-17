@@ -24,28 +24,38 @@ with chart_cols_pair2[1]: # Refresh Duration vs. Rows Processed (Scatter Plot)
             )
 
             cols_to_sum = available_row_metrics_scatter[selected_row_metric_for_scatter]
-            scatter_df = filtered_history_df.copy()
-            scatter_df['X_AXIS_METRIC_VALUE'] = scatter_df[cols_to_sum].sum(axis=1)
             
-            # --- IMPORTANT: CONVERT Y-AXIS DATA TO SELECTED DISPLAY UNIT ---
-            # Apply format_seconds_to_readable to get the raw numbers in the desired units for plotting
+            # --- START SCATTER PLOT REBUILD ---
+            # Create the scatter_df with necessary columns for plotting and hover
+            scatter_df = filtered_history_df.copy()
+
+            # Calculate X-axis metric value
+            scatter_df['X_AXIS_METRIC_VALUE'] = scatter_df[cols_to_sum].sum(axis=1)
+
+            # --- TRANSFORM Y-AXIS DATA TO SELECTED DISPLAY UNIT FOR PLOTTING ---
             if time_format_option == 'minutes':
                 scatter_df['Y_AXIS_PLOT_VALUE'] = scatter_df['REFRESH_DURATION_SEC'] / 60
             elif time_format_option == 'hours':
                 scatter_df['Y_AXIS_PLOT_VALUE'] = scatter_df['REFRESH_DURATION_SEC'] / 3600
             elif time_format_option == 'days':
                 scatter_df['Y_AXIS_PLOT_VALUE'] = scatter_df['REFRESH_DURATION_SEC'] / 86400
-            else: # Default to seconds or mixed if other options
-                scatter_df['Y_AXIS_PLOT_VALUE'] = scatter_df['REFRESH_DURATION_SEC'] # Already in seconds
+            else: # Default to seconds or mixed if other options (mixed will plot seconds)
+                scatter_df['Y_AXIS_PLOT_VALUE'] = scatter_df['REFRESH_DURATION_SEC']
 
+            # Drop NaNs critical for plotting (after Y_AXIS_PLOT_VALUE is created)
+            # Ensure these columns exist before dropping (already checked by available_row_metrics_scatter)
             scatter_df = scatter_df.dropna(subset=['Y_AXIS_PLOT_VALUE', 'X_AXIS_METRIC_VALUE', 'QUALIFIED_NAME', 'STATE', 'REFRESH_ACTION', 'REFRESH_START_TIME_DT', 'REFRESH_END_TIME_DT', 'STATE_MESSAGE']).copy()
-            
-            # Log scale checkboxes (repositioned correctly within this column)
+
+            # Filter out 'NO_DATA' actions for better insight on this plot (as in previous working versions)
+            scatter_df = scatter_df[scatter_df['REFRESH_ACTION'] != 'NO_DATA'].copy()
+
+            # --- LOG SCALE CHECKBOXES & ZERO/NEGATIVE VALUE HANDLING ---
+            # These must be defined before their values are used for filtering
             log_scales_cols = st.columns([1, 1])
             with log_scales_cols[0]:
-                log_x_scatter = st.checkbox("Log Scale X-axis", key="log_x_scatter_dt_state")
+                log_x_scatter = st.checkbox("Log X-axis", key="log_x_scatter_dt_state")
             with log_scales_cols[1]:
-                log_y_scatter = st.checkbox("Log Scale Y-axis", key="log_y_scatter_dt_state")
+                log_y_scatter = st.checkbox("Log Y-axis", key="log_y_scatter_dt_state")
 
             if log_x_scatter or log_y_scatter:
                 initial_count = len(scatter_df)
@@ -58,7 +68,8 @@ with chart_cols_pair2[1]: # Refresh Duration vs. Rows Processed (Scatter Plot)
 
 
             if not scatter_df.empty:
-                # Format timestamps and duration for hover text
+                # --- PREPARE HOVER DATA ---
+                # These columns are for hover *display* and should always be derived from original data
                 scatter_df['REFRESH_START_TIME_FMT'] = scatter_df['REFRESH_START_TIME_DT'].dt.strftime('%Y-%m-%d %H:%M:%S').fillna("N/A")
                 scatter_df['REFRESH_END_TIME_FMT'] = scatter_df['REFRESH_END_TIME_DT'].dt.strftime('%Y-%m-%d %H:%M:%S').fillna("N/A")
                 
@@ -69,32 +80,69 @@ with chart_cols_pair2[1]: # Refresh Duration vs. Rows Processed (Scatter Plot)
 
                 fig_duration_vs_rows = px.scatter(
                     scatter_df,
-                    x='X_AXIS_METRIC_VALUE',
-                    y='Y_AXIS_PLOT_VALUE', # PLOTTING THE CONVERTED Y-AXIS VALUE
+                    x='X_AXIS_METRIC_VALUE', # Plotting X in raw value
+                    y='Y_AXIS_PLOT_VALUE',   # PLOTTING THE CONVERTED Y-AXIS VALUE
                     color='STATE', # Color by refresh state
+                    # Explicitly control hover data via customdata
                     hover_data={
-                        'QUALIFIED_NAME': False, # Explicitly controlled in customdata
-                        'STATE': False, # Explicitly controlled in customdata
-                        'REFRESH_ACTION': False, # Manual customdata
-                        'STATE_MESSAGE': False, # Manual customdata
-                        'REFRESH_START_TIME_DT': False, # Manual customdata
-                        'REFRESH_END_TIME_DT': False # Manual customdata
+                        'QUALIFIED_NAME': False, 'STATE': False, 'REFRESH_ACTION': False,
+                        'STATE_MESSAGE': False, 'REFRESH_START_TIME_DT': False, 'REFRESH_END_TIME_DT': False
                     },
-                    title=f'Refresh Duration vs. {selected_row_metric_for_scatter}', # Redundant title
+                    # --- AXIS LABELS ---
                     labels={
                         'Y_AXIS_PLOT_VALUE': f'Duration ({time_format_option})', # Dynamic Y-axis label
                         'X_AXIS_METRIC_VALUE': selected_row_metric_for_scatter
                     },
-                    color_discrete_map={
+                    color_discrete_map={ # Explicitly map colors for consistency
                         'SUCCEEDED': 'blue', 'FAILED': 'red', 'UPSTREAM_FAILED': 'darkred',
                         'CANCELLED': 'orange', 'EXECUTING': 'green', 'SCHEDULED': 'grey', 'UNKNOWN': 'purple'
                     }
                 )
+                fig_duration_vs_rows.update_layout(title_text='') # Remove title_text
 
+
+                # --- UPDATE AXES FOR FORMATTING/LOG SCALE ---
+                if log_x_scatter:
+                    fig_duration_vs_rows.update_xaxes(type='log', rangemode='tozero')
+                else: # Default linear and standard tick formatting for X
+                    fig_duration_vs_rows.update_xaxes(type='linear', tickformat=',.0s') # E.g., 100, 1k, 1M, 1G
+                
+                if log_y_scatter:
+                    fig_duration_vs_rows.update_yaxes(type='log', rangemode='tozero')
+                else: # Default linear and custom tick text for Y if not seconds
+                    # For Y-axis, Plotly's tickformat does not handle 'mixed' or '1m' well.
+                    # We need to explicitly calculate tick values in the PLOTTING unit (Y_AXIS_PLOT_VALUE)
+                    # and format their text for display.
+                    if time_format_option != 'seconds':
+                        min_y_val = fig_duration_vs_rows.layout.yaxis.range[0] if fig_duration_vs_rows.layout.yaxis.range else scatter_df['Y_AXIS_PLOT_VALUE'].min()
+                        max_y_val = fig_duration_vs_rows.layout.yaxis.range[1] if fig_duration_vs_rows.layout.yaxis.range else scatter_df['Y_AXIS_PLOT_VALUE'].max()
+                        
+                        if max_y_val > min_y_val and max_y_val > 0:
+                            num_ticks = 5 # Default number of ticks
+                            tick_values_converted_unit = np.linspace(min_y_val, max_y_val, num=num_ticks, endpoint=True)
+                            
+                            # Convert these tick values BACK to seconds for format_seconds_to_readable
+                            if time_format_option == 'minutes':
+                                tick_values_seconds = tick_values_converted_unit * 60
+                            elif time_format_option == 'hours':
+                                tick_values_seconds = tick_values_converted_unit * 3600
+                            elif time_format_option == 'days':
+                                tick_values_seconds = tick_values_converted_unit * 86400
+                            else: # Should be seconds if format is seconds
+                                tick_values_seconds = tick_values_converted_unit
+                            
+                            tick_texts_formatted = format_seconds_to_readable(pd.Series(tick_values_seconds), time_format_option).tolist()
+                            fig_duration_vs_rows.update_yaxes(tickvals=tick_values_converted_unit, ticktext=tick_texts_formatted)
+                        else: # Fallback for edge cases with zero/min data
+                            fig_duration_vs_rows.update_yaxes(type='linear', tickformat=".1f") # Simple float format
+                    else: # If seconds, use a standard tickformat for seconds
+                        fig_duration_vs_rows.update_yaxes(type='linear', tickformat=".1f", ticksuffix="s")
+
+                # --- Custom hovertemplate for scatter plot ---
                 fig_duration_vs_rows.update_traces(
                     hovertemplate=(
-                        '<b>Table: %{customdata[0]}</b><br>'
-                        'State: %{customdata[1]}<br>'
+                        '<b>Table: %{customdata[0]}</b><br>' # QUALIFIED_NAME from customdata
+                        'State: %{customdata[1]}<br>'       # STATE from customdata
                         f'{selected_row_metric_for_scatter}: %{{customdata[2]}}<br>'
                         'Duration: %{customdata[3]}<br>' # This now matches the hover value for duration
                         'Action: %{customdata[4]}<br>'
@@ -114,39 +162,7 @@ with chart_cols_pair2[1]: # Refresh Duration vs. Rows Processed (Scatter Plot)
                         scatter_df['STATE_MESSAGE']
                     ), axis=-1)
                 )
-
-                if log_x_scatter:
-                    fig_duration_vs_rows.update_xaxes(type='log', rangemode='tozero') # rangemode for log axes
-                if log_y_scatter:
-                    fig_duration_vs_rows.update_yaxes(type='log', rangemode='tozero') # rangemode for log axes
-
-                # --- Dynamic Tick Formatting for Y-axis (Duration) ---
-                if time_format_option != 'seconds' and not log_y_scatter: # Apply custom linear ticks
-                    # Get the current min/max of the Y-axis (in converted units)
-                    min_y_val = fig_duration_vs_rows.layout.yaxis.range[0] if fig_duration_vs_rows.layout.yaxis.range else scatter_df['Y_AXIS_PLOT_VALUE'].min()
-                    max_y_val = fig_duration_vs_rows.layout.yaxis.range[1] if fig_duration_vs_rows.layout.yaxis.range else scatter_df['Y_AXIS_PLOT_VALUE'].max()
-                    
-                    if max_y_val > min_y_val:
-                        # Generate some linear tick values in the converted unit range
-                        num_ticks = 5 # Default number of ticks
-                        tick_values_converted = np.linspace(min_y_val, max_y_val, num=num_ticks, endpoint=True)
-                        
-                        # Convert these tick values BACK to seconds for format_seconds_to_readable
-                        # and then format them in the selected unit
-                        if time_format_option == 'minutes':
-                            tick_values_seconds = tick_values_converted * 60
-                        elif time_format_option == 'hours':
-                            tick_values_seconds = tick_values_converted * 3600
-                        elif time_format_option == 'days':
-                            tick_values_seconds = tick_values_converted * 86400
-                        else:
-                            tick_values_seconds = tick_values_converted # Should be seconds if format is seconds
-
-                        tick_texts_formatted = format_seconds_to_readable(pd.Series(tick_values_seconds), time_format_option).tolist()
-                        
-                        fig_duration_vs_rows.update_yaxes(tickvals=tick_values_converted, ticktext=tick_texts_formatted)
-
-
+                
                 st.plotly_chart(fig_duration_vs_rows, use_container_width=True)
             else:
                 st.info(f"No valid data for Refresh Duration vs. {selected_row_metric_for_scatter} scatter plot after filters (considering zero/negative values for log scales). Please adjust filters.", icon="ℹ️")
