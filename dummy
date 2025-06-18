@@ -1,256 +1,96 @@
-# tabs/driver_logs_tab.py
-import streamlit as st
-import pandas as pd
-import plotly.express as px
-import numpy as np
-import datetime
+with chart_cols_pair2[0]: # Refresh Duration Trend
+        st.markdown("<p style='font-size:16px;'><b>Refresh Duration Trend</b></p>", unsafe_allow_html=True)
+        if not filtered_history_df.empty:
+            duration_trend_df = filtered_history_df.groupby(
+                pd.Grouper(key='DATA_TIMESTAMP_DT', freq='D')
+            )['REFRESH_DURATION_SEC'].agg(['mean', 'median', lambda x: x.quantile(0.95)]).reset_index()
+            duration_trend_df.columns = ['Date', 'Mean Duration', 'Median Duration', 'P95 Duration']
 
-# Helper function to convert seconds to a more readable format (unchanged)
-def format_seconds_to_readable(seconds_series, format_type):
-    if format_type == "seconds":
-        return seconds_series.round(1).astype(str) + "s"
-    elif format_type == "minutes":
-        return (seconds_series / 60).round(1).astype(str) + "m"
-    elif format_type == "hours":
-        return (seconds_series / 3600).round(1).astype(str) + "h"
-    elif format_type == "days":
-        return (seconds_series / 86400).round(1).astype(str) + "d"
-    elif format_type == "mixed":
-        def mix_format(s):
-            if pd.isna(s) or s is None: return "N/A"
-            s = float(s)
-            if s == 0: return "0s"
+            # --- TRANSFORM Y-AXIS DATA TO SELECTED DISPLAY UNIT FOR PLOTTING ---
+            # Create columns for plotting in the selected time format
+            if time_format_option == 'minutes':
+                duration_trend_df['Mean_Duration_Plot'] = duration_trend_df['Mean Duration'] / 60
+                duration_trend_df['Median_Duration_Plot'] = duration_trend_df['Median Duration'] / 60
+                duration_trend_df['P95_Duration_Plot'] = duration_trend_df['P95 Duration'] / 60
+            elif time_format_option == 'hours':
+                duration_trend_df['Mean_Duration_Plot'] = duration_trend_df['Mean Duration'] / 3600
+                duration_trend_df['Median_Duration_Plot'] = duration_trend_df['Median Duration'] / 3600
+                duration_trend_df['P95_Duration_Plot'] = duration_trend_df['P95 Duration'] / 3600
+            elif time_format_option == 'days':
+                duration_trend_df['Mean_Duration_Plot'] = duration_trend_df['Mean Duration'] / 86400
+                duration_trend_df['Median_Duration_Plot'] = duration_trend_df['Median Duration'] / 86400
+                duration_trend_df['P95_Duration_Plot'] = duration_trend_df['P95 Duration'] / 86400
+            else: # 'seconds' or 'mixed' (plot in seconds)
+                duration_trend_df['Mean_Duration_Plot'] = duration_trend_df['Mean Duration']
+                duration_trend_df['Median_Duration_Plot'] = duration_trend_df['Median Duration']
+                duration_trend_df['P95_Duration_Plot'] = duration_trend_df['P95 Duration']
             
-            days = int(s // 86400)
-            hours = int((s % 86400) // 3600)
-            minutes = int((s % 3600) // 60)
-            seconds = s % 60
-            
-            parts = []
-            if days > 0: parts.append(f"{days}d")
-            if hours > 0: parts.append(f"{hours}h")
-            if minutes > 0: parts.append(f"{minutes}m")
-            if seconds > 0 and (not parts or seconds >= 1):
-                parts.append(f"{seconds:.1f}s")
-            
-            return " ".join(parts) if parts else "0s"
-        return seconds_series.apply(mix_format)
-    return seconds_series
+            # --- Prepare hover text for line chart ---
+            duration_trend_df['Mean_Duration_FMT_Hover'] = format_seconds_to_readable(duration_trend_df['Mean Duration'], time_format_option)
+            duration_trend_df['Median_Duration_FMT_Hover'] = format_seconds_to_readable(duration_trend_df['Median Duration'], time_format_option)
+            duration_trend_df['P95_Duration_FMT_Hover'] = format_seconds_to_readable(duration_trend_df['P95 Duration'], time_format_option)
 
 
-def render_driver_logs_tab(tracking_df: pd.DataFrame, driver_exec_df: pd.DataFrame): # Accepts both DFs
-    st.header("Collection Driver Status & Logs")
-    st.write("Monitor the health and execution status of the data collection pipeline.")
-
-    # --- Overall Driver Health KPIs ---
-    st.markdown("---")
-    st.subheader("Overall Driver Health KPIs")
-
-    if tracking_df.empty:
-        st.info("No tracking data available. Ensure the collection driver is running and populating 'T_DYNAMIC_TABLE_TRACKING'.", icon="ℹ️")
-        # Still proceed to show driver_exec_df KPIs if available
-    
-    total_tables_tracked = tracking_df['QUALIFIED_NAME'].nunique() if not tracking_df.empty else 0
-    active_tables_tracked = tracking_df[tracking_df['IS_ACTIVE'] == True]['QUALIFIED_NAME'].nunique() if not tracking_df.empty else 0
-    
-    # KPIs for actively monitoring counts (unchanged, already accurate)
-    actively_monitoring_refresh_history = tracking_df[(tracking_df['IS_ACTIVE'] == True) & (tracking_df['TRACK_REFRESH_HISTORY'] == True)]['QUALIFIED_NAME'].nunique() if not tracking_df.empty else 0
-    actively_monitoring_metadata_snapshot = tracking_df[(tracking_df['IS_ACTIVE'] == True) & (tracking_df['TRACK_METADATA_SNAPSHOT'] == True)]['QUALIFIED_NAME'].nunique() if not tracking_df.empty else 0
-
-    # Driver duration KPIs from driver_exec_df
-    last_successful_run = None
-    if not driver_exec_df.empty:
-        driver_exec_df_success = driver_exec_df[driver_exec_df['EXECUTION_STATUS'] == 'SUCCESS'].copy()
-        if not driver_exec_df_success.empty:
-            last_successful_run = driver_exec_df_success.sort_values('START_TIME', ascending=False).iloc[0]
-    
-    last_driver_run_start_time = None
-    last_driver_run_duration_seconds = np.nan
-    if last_successful_run is not None:
-        last_driver_run_start_time = last_successful_run['START_TIME']
-        last_driver_run_duration_seconds = last_successful_run['EXECUTION_TIME_SECONDS']
-    
-    last_driver_run_time_fmt = last_driver_run_start_time.strftime('%Y-%m-%d %H:%M:%S') if isinstance(last_driver_run_start_time, pd.Timestamp) else "N/A"
-    last_driver_run_duration_fmt = format_seconds_to_readable(pd.Series([last_driver_run_duration_seconds]), "mixed").iloc[0] if not pd.isna(last_driver_run_duration_seconds) else "N/A"
-
-
-    kpi_cols_driver_1 = st.columns(3)
-    with kpi_cols_driver_1[0]:
-        st.markdown(f"<p style='font-size:14px; margin-bottom:0;'>Total Tables Tracked</p>", unsafe_allow_html=True)
-        st.markdown(f"<h3 style='margin-top:0;'>{total_tables_tracked}</h3>", unsafe_allow_html=True)
-    with kpi_cols_driver_1[1]:
-        st.markdown(f"<p style='font-size:14px; margin-bottom:0;'>Active Tables Monitored</p>", unsafe_allow_html=True)
-        st.markdown(f"<h3 style='margin-top:0;'>{active_tables_tracked}</h3>", unsafe_allow_html=True)
-    with kpi_cols_driver_1[2]:
-        st.markdown(f"<p style='font-size:14px; margin-bottom:0;'>Last Driver Run Time</p>", unsafe_allow_html=True)
-        st.markdown(f"<h3 style='margin-top:0;'>{last_driver_run_time_fmt}</h3>", unsafe_allow_html=True)
-
-    kpi_cols_driver_2 = st.columns(3)
-    with kpi_cols_driver_2[0]:
-        st.markdown(f"<p style='font-size:14px; margin-bottom:0;'>Active (RH) Tracking</p>", unsafe_allow_html=True)
-        st.markdown(f"<h3 style='margin-top:0;'>{actively_monitoring_refresh_history}</h3>", unsafe_allow_html=True)
-    with kpi_cols_driver_2[1]:
-        st.markdown(f"<p style='font-size:14px; margin-bottom:0;'>Active (Metadata) Tracking</p>", unsafe_allow_html=True)
-        st.markdown(f"<h3 style='margin-top:0;'>{actively_monitoring_metadata_snapshot}</h3>", unsafe_allow_html=True)
-    with kpi_cols_driver_2[2]:
-        st.markdown(f"<p style='font-size:14px; margin-bottom:0;'>Last Run Duration</p>", unsafe_allow_html=True)
-        st.markdown(f"<h3 style='margin-top:0;'>{last_driver_run_duration_fmt}</h3>", unsafe_allow_html=True)
-
-
-    st.divider()
-
-    # --- Charts Section ---
-    chart_cols_driver = st.columns([0.6, 0.4])
-
-    with chart_cols_driver[0]: # Line chart for driver execution time trend
-        st.subheader("Driver Execution Time Trend")
-        st.write("Historical execution times of the main collection driver program.")
-
-        driver_exec_df_success_for_chart = driver_exec_df[driver_exec_df['EXECUTION_STATUS'] == 'SUCCESS'].copy()
-        if not driver_exec_df_success_for_chart.empty:
-            driver_exec_df_success_for_chart = driver_exec_df_success_for_chart.sort_values('START_TIME')
-            
-            driver_exec_df_success_for_chart['EXECUTION_TIME_FMT'] = format_seconds_to_readable(
-                driver_exec_df_success_for_chart['EXECUTION_TIME_SECONDS'], "mixed"
+            fig_duration_trend = px.line(
+                duration_trend_df,
+                x='Date',
+                y=['Mean_Duration_Plot', 'Median_Duration_Plot', 'P95_Duration_Plot'], # Plot converted values
+                title='Daily Refresh Duration Trend (Mean, Median, P95)', # Redundant title
+                labels={'value': f'Duration ({time_format_option})'} # Dynamic Y-axis label
             )
+            fig_duration_trend.update_layout(title_text='')
 
-            fig_driver_trend = px.line(
-                driver_exec_df_success_for_chart,
-                x='START_TIME',
-                y='EXECUTION_TIME_SECONDS',
-                title='Driver Program Execution Duration Over Time',
-                labels={'START_TIME': 'Run Time', 'EXECUTION_TIME_SECONDS': 'Duration (seconds)'},
-                line_shape='linear',
-                markers=True
-            )
-            fig_driver_trend.update_layout(hovermode="x unified")
-            fig_driver_trend.update_traces(
-                hovertemplate='Time: %{x}<br>Duration: %{customdata}<extra></extra>',
-                customdata=driver_exec_df_success_for_chart['EXECUTION_TIME_FMT']
-            )
-
-            use_log_scale_driver_trend = st.checkbox("Log Scale Y-axis (Driver Trend)", key="log_scale_driver_trend")
-            if use_log_scale_driver_trend:
-                fig_driver_trend.update_yaxes(type='log')
+            if use_log_scale_duration_trend:
+                fig_duration_trend.update_yaxes(type='log', title='Duration (Log Scale)', rangemode='tozero')
                 st.info("Logarithmic scale applied to Y-axis.", icon="ℹ️")
 
-            st.plotly_chart(fig_driver_trend, use_container_width=True)
-        else:
-            st.info("No driver execution history data to display.", icon="ℹ️")
+            # --- Custom Hovertemplate for line chart ---
+            # Update traces to use customdata for formatted values
+            # The 'name' of the trace corresponds to the column name in 'y' argument (e.g. 'Mean_Duration_Plot')
+            for trace in fig_duration_trend.data:
+                if trace.name == 'Mean_Duration_Plot':
+                    trace.hovertemplate = '<b>Date:</b> %{x|%Y-%m-%d}<br><b>Mean Duration:</b> %{customdata}<extra></extra>'
+                    trace.customdata = duration_trend_df['Mean_Duration_FMT_Hover']
+                elif trace.name == 'Median_Duration_Plot':
+                    trace.hovertemplate = '<b>Date:</b> %{x|%Y-%m-%d}<br><b>Median Duration:</b> %{customdata}<extra></extra>'
+                    trace.customdata = duration_trend_df['Median_Duration_FMT_Hover']
+                elif trace.name == 'P95_Duration_Plot':
+                    trace.hovertemplate = '<b>Date:</b> %{x|%Y-%m-%d}<br><b>P95 Duration:</b> %{customdata}<extra></extra>'
+                    trace.customdata = duration_trend_df['P95_Duration_FMT_Hover']
 
 
-    with chart_cols_driver[1]: # Horizontal bar chart for collection status distribution
-        st.subheader("Collection Status Distribution")
-        st.write("Breakdown of tables by their last collection status for each type.")
-
-        if not tracking_df.empty:
-            # --- FIXED: Filter tracking_df to include only actively monitored tables for the bar chart ---
-            active_rh_tables = tracking_df[(tracking_df['IS_ACTIVE'] == True) & (tracking_df['TRACK_REFRESH_HISTORY'] == True)].copy()
-            active_meta_tables = tracking_df[(tracking_df['IS_ACTIVE'] == True) & (tracking_df['TRACK_METADATA_SNAPSHOT'] == True)].copy()
-
-            status_data = []
-            if not active_rh_tables.empty:
-                # Use value_counts() on the specific status column of the filtered df
-                refresh_history_status_counts = active_rh_tables['LAST_REFRESH_HISTORY_COLLECTION_STATUS'].value_counts().reset_index()
-                refresh_history_status_counts.columns = ['Status', 'Count']
-                refresh_history_status_counts['Collection_Type'] = 'Refresh History'
-                status_data.append(refresh_history_status_counts)
-            
-            if not active_meta_tables.empty:
-                metadata_status_counts = active_meta_tables['LAST_METADATA_COLLECTION_STATUS'].value_counts().reset_index()
-                metadata_status_counts.columns = ['Status', 'Count']
-                metadata_status_counts['Collection_Type'] = 'Metadata Snapshot'
-                status_data.append(metadata_status_counts)
-
-            if status_data:
-                combined_status_df = pd.concat(status_data)
+            # --- Dynamic Tick Formatting for Y-axis (Duration Trend) ---
+            if time_format_option != 'seconds' and not use_log_scale_duration_trend:
+                min_y_val = fig_duration_trend.layout.yaxis.range[0] if fig_duration_trend.layout.yaxis.range else duration_trend_df['Y_AXIS_PLOT_VALUE'].min() # This Y_AXIS_PLOT_VALUE needs to be available
+                max_y_val = fig_duration_trend.layout.yaxis.range[1] if fig_duration_trend.layout.yaxis.range else duration_trend_df['Y_AXIS_PLOT_VALUE'].max()
                 
-                status_order = ['SUCCESS', 'FAILED', 'UNKNOWN', 'N/A'] # Ensure UNKNOWN/N/A are handled
-                combined_status_df['Status'] = pd.Categorical(combined_status_df['Status'], categories=status_order, ordered=True)
-                combined_status_df = combined_status_df.sort_values(['Collection_Type', 'Status'])
+                # Here, the range for tick generation should use the max of the PLOT values across all three lines
+                max_plot_value = duration_trend_df[['Mean_Duration_Plot', 'Median_Duration_Plot', 'P95_Duration_Plot']].max().max()
+                min_plot_value = duration_trend_df[['Mean_Duration_Plot', 'Median_Duration_Plot', 'P95_Duration_Plot']].min().min()
 
-                fig_collection_status = px.bar(
-                    combined_status_df,
-                    x='Count',
-                    y='Collection_Type',
-                    color='Status',
-                    orientation='h',
-                    barmode='stack',
-                    title='Last Collection Status by Type',
-                    labels={'Count': 'Number of Tables', 'Collection_Type': 'Collection Type', 'Status': 'Status'},
-                    color_discrete_map={'SUCCESS': 'green', 'FAILED': 'red', 'N/A': 'grey', 'UNKNOWN': 'lightgray'}
-                )
-                fig_collection_status.update_yaxes(categoryorder="array", categoryarray=['Refresh History', 'Metadata Snapshot'][::-1])
-                st.plotly_chart(fig_collection_status, use_container_width=True)
-            else:
-                st.info("No collection status data to display for actively monitored tables.", icon="ℹ️") # More specific message
+                if max_plot_value > min_plot_value and max_plot_value > 0:
+                    num_ticks = 5
+                    tick_values_converted_unit = np.linspace(min_plot_value, max_plot_value, num=num_ticks, endpoint=True)
+                    
+                    if time_format_option == 'minutes':
+                        tick_values_seconds = tick_values_converted_unit * 60
+                    elif time_format_option == 'hours':
+                        tick_values_seconds = tick_values_converted_unit * 3600
+                    elif time_format_option == 'days':
+                        tick_values_seconds = tick_values_converted_unit * 86400
+                    else: # 'seconds' or 'mixed'
+                        tick_values_seconds = tick_values_converted_unit
+                        
+                    tick_texts_formatted = format_seconds_to_readable(pd.Series(tick_values_seconds), time_format_option).tolist()
+                    
+                    fig_duration_trend.update_yaxes(
+                        type='linear',
+                        tickvals=tick_values_converted_unit,
+                        ticktext=tick_texts_formatted
+                    )
+                else:
+                    fig_duration_trend.update_yaxes(type='linear', tickformat=".1f") # Fallback
+
+            st.plotly_chart(fig_duration_trend, use_container_width=True)
         else:
-            st.info("No tracking data available to display collection status distribution.", icon="ℹ️")
-
-    st.divider()
-
-    # --- Collection Status per Table (Detailed Table View) ---
-    st.subheader("Detailed Collection Status per Table")
-    st.write("View the last collection attempt status and messages for each dynamic table being tracked.")
-
-    if tracking_df.empty:
-        st.info("No tracking data available to display detailed status.", icon="ℹ️")
-        return
-
-    detailed_cols_to_display = [
-        'QUALIFIED_NAME', 
-        'IS_ACTIVE',
-        'TRACK_REFRESH_HISTORY', 
-        'LAST_REFRESH_HISTORY_COLLECTION_TIMESTAMP', 
-        'LAST_REFRESH_HISTORY_COLLECTION_STATUS', 
-        'LAST_REFRESH_HISTORY_COLLECTION_MESSAGE',
-        'TRACK_METADATA_SNAPSHOT',
-        'LAST_METADATA_COLLECTION_TIMESTAMP',
-        'LAST_METADATA_COLLECTION_STATUS',
-        'LAST_METADATA_COLLECTION_MESSAGE',
-        'UPDATED_AT'
-    ]
-    
-    detailed_labels_map = {
-        'QUALIFIED_NAME': 'Dynamic Table',
-        'IS_ACTIVE': 'Active?',
-        'TRACK_REFRESH_HISTORY': 'Track RH?',
-        'LAST_REFRESH_HISTORY_COLLECTION_TIMESTAMP': 'Last RH Collect Time',
-        'LAST_REFRESH_HISTORY_COLLECTION_STATUS': 'Last RH Status',
-        'LAST_REFRESH_HISTORY_COLLECTION_MESSAGE': 'Last RH Message',
-        'TRACK_METADATA_SNAPSHOT': 'Track Metadata?',
-        'LAST_METADATA_COLLECTION_TIMESTAMP': 'Last Metadata Collect Time',
-        'LAST_METADATA_COLLECTION_STATUS': 'Last Metadata Status',
-        'LAST_METADATA_COLLECTION_MESSAGE': 'Last Metadata Message',
-        'UPDATED_AT': 'Tracking Record Last Updated'
-    }
-
-    filter_detailed_table_cols = st.columns([1, 1])
-    with filter_detailed_table_cols[0]:
-        status_filter_options = ['All', 'SUCCESS', 'FAILED', 'N/A', 'UNKNOWN']
-        selected_rh_status = st.selectbox(
-            "Filter by Refresh History Status:", options=status_filter_options, key="filter_rh_status_dl"
-        )
-    with filter_detailed_table_cols[1]:
-        selected_meta_status = st.selectbox(
-            "Filter by Metadata Snapshot Status:", options=status_filter_options, key="filter_meta_status_dl"
-        )
-    
-    detailed_filtered_df = tracking_df.copy()
-
-    if selected_rh_status != 'All':
-        detailed_filtered_df = detailed_filtered_df[detailed_filtered_df['LAST_REFRESH_HISTORY_COLLECTION_STATUS'] == selected_rh_status].copy()
-    if selected_meta_status != 'All':
-        detailed_filtered_df = detailed_filtered_df[detailed_filtered_df['LAST_METADATA_COLLECTION_STATUS'] == selected_meta_status].copy()
-
-    if not detailed_filtered_df.empty:
-        detailed_filtered_df = detailed_filtered_df.sort_values(
-            ['LAST_REFRESH_HISTORY_COLLECTION_STATUS', 'LAST_METADATA_COLLECTION_STATUS', 'UPDATED_AT'],
-            ascending=[True, True, False]
-        )
-        st.dataframe(
-            detailed_filtered_df[[col for col in detailed_cols_to_display if col in detailed_filtered_df.columns]].rename(columns=detailed_labels_map),
-            use_container_width=True
-        )
-    else:
-        st.info("No detailed collection status data to display based on current filters.", icon="ℹ️")
+            st.info("No REFRESH_DURATION_SEC data available for trend analysis.", icon="ℹ️")
