@@ -3,9 +3,9 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import numpy as np
-import datetime # Import for datetime operations
+import datetime
 
-# Helper function to convert seconds to a more readable format
+# Helper function to convert seconds to a more readable format (unchanged)
 def format_seconds_to_readable(seconds_series, format_type):
     if format_type == "seconds":
         return seconds_series.round(1).astype(str) + "s"
@@ -46,33 +46,34 @@ def render_driver_logs_tab(tracking_df: pd.DataFrame, driver_exec_df: pd.DataFra
     st.markdown("---")
     st.subheader("Overall Driver Health KPIs")
 
-    # --- Data preparation for KPIs ---
+    if tracking_df.empty:
+        st.info("No tracking data available. Ensure the collection driver is running and populating 'T_DYNAMIC_TABLE_TRACKING'.", icon="ℹ️")
+        # Still proceed to show driver_exec_df KPIs if available
+    
     total_tables_tracked = tracking_df['QUALIFIED_NAME'].nunique() if not tracking_df.empty else 0
     active_tables_tracked = tracking_df[tracking_df['IS_ACTIVE'] == True]['QUALIFIED_NAME'].nunique() if not tracking_df.empty else 0
     
+    # KPIs for actively monitoring counts (unchanged, already accurate)
     actively_monitoring_refresh_history = tracking_df[(tracking_df['IS_ACTIVE'] == True) & (tracking_df['TRACK_REFRESH_HISTORY'] == True)]['QUALIFIED_NAME'].nunique() if not tracking_df.empty else 0
     actively_monitoring_metadata_snapshot = tracking_df[(tracking_df['IS_ACTIVE'] == True) & (tracking_df['TRACK_METADATA_SNAPSHOT'] == True)]['QUALIFIED_NAME'].nunique() if not tracking_df.empty else 0
 
-    # For Last Driver Run Time and Duration, rely on driver_exec_df
+    # Driver duration KPIs from driver_exec_df
     last_successful_run = None
     if not driver_exec_df.empty:
-        driver_exec_df_success = driver_exec_df[driver_exec_df['EXECUTION_STATUS'] == 'SUCCESS'].copy() # Ensure copy for filtering
+        driver_exec_df_success = driver_exec_df[driver_exec_df['EXECUTION_STATUS'] == 'SUCCESS'].copy()
         if not driver_exec_df_success.empty:
             last_successful_run = driver_exec_df_success.sort_values('START_TIME', ascending=False).iloc[0]
     
-    # Calculate Last Driver Run Time and Duration
     last_driver_run_start_time = None
     last_driver_run_duration_seconds = np.nan
     if last_successful_run is not None:
         last_driver_run_start_time = last_successful_run['START_TIME']
         last_driver_run_duration_seconds = last_successful_run['EXECUTION_TIME_SECONDS']
     
-    # Format for display
     last_driver_run_time_fmt = last_driver_run_start_time.strftime('%Y-%m-%d %H:%M:%S') if isinstance(last_driver_run_start_time, pd.Timestamp) else "N/A"
     last_driver_run_duration_fmt = format_seconds_to_readable(pd.Series([last_driver_run_duration_seconds]), "mixed").iloc[0] if not pd.isna(last_driver_run_duration_seconds) else "N/A"
 
 
-    # Display KPIs
     kpi_cols_driver_1 = st.columns(3)
     with kpi_cols_driver_1[0]:
         st.markdown(f"<p style='font-size:14px; margin-bottom:0;'>Total Tables Tracked</p>", unsafe_allow_html=True)
@@ -99,13 +100,12 @@ def render_driver_logs_tab(tracking_df: pd.DataFrame, driver_exec_df: pd.DataFra
     st.divider()
 
     # --- Charts Section ---
-    chart_cols_driver = st.columns([0.6, 0.4]) # Left for Line Chart, Right for Horizontal Bar Chart
+    chart_cols_driver = st.columns([0.6, 0.4])
 
     with chart_cols_driver[0]: # Line chart for driver execution time trend
         st.subheader("Driver Execution Time Trend")
         st.write("Historical execution times of the main collection driver program.")
 
-        # Filter for successful runs for the trend chart
         driver_exec_df_success_for_chart = driver_exec_df[driver_exec_df['EXECUTION_STATUS'] == 'SUCCESS'].copy()
         if not driver_exec_df_success_for_chart.empty:
             driver_exec_df_success_for_chart = driver_exec_df_success_for_chart.sort_values('START_TIME')
@@ -144,15 +144,20 @@ def render_driver_logs_tab(tracking_df: pd.DataFrame, driver_exec_df: pd.DataFra
         st.write("Breakdown of tables by their last collection status for each type.")
 
         if not tracking_df.empty:
+            # --- FIXED: Filter tracking_df to include only actively monitored tables for the bar chart ---
+            active_rh_tables = tracking_df[(tracking_df['IS_ACTIVE'] == True) & (tracking_df['TRACK_REFRESH_HISTORY'] == True)].copy()
+            active_meta_tables = tracking_df[(tracking_df['IS_ACTIVE'] == True) & (tracking_df['TRACK_METADATA_SNAPSHOT'] == True)].copy()
+
             status_data = []
-            if 'LAST_REFRESH_HISTORY_COLLECTION_STATUS' in tracking_df.columns:
-                refresh_history_status_counts = tracking_df['LAST_REFRESH_HISTORY_COLLECTION_STATUS'].value_counts().reset_index()
+            if not active_rh_tables.empty:
+                # Use value_counts() on the specific status column of the filtered df
+                refresh_history_status_counts = active_rh_tables['LAST_REFRESH_HISTORY_COLLECTION_STATUS'].value_counts().reset_index()
                 refresh_history_status_counts.columns = ['Status', 'Count']
                 refresh_history_status_counts['Collection_Type'] = 'Refresh History'
                 status_data.append(refresh_history_status_counts)
             
-            if 'LAST_METADATA_COLLECTION_STATUS' in tracking_df.columns:
-                metadata_status_counts = tracking_df['LAST_METADATA_COLLECTION_STATUS'].value_counts().reset_index()
+            if not active_meta_tables.empty:
+                metadata_status_counts = active_meta_tables['LAST_METADATA_COLLECTION_STATUS'].value_counts().reset_index()
                 metadata_status_counts.columns = ['Status', 'Count']
                 metadata_status_counts['Collection_Type'] = 'Metadata Snapshot'
                 status_data.append(metadata_status_counts)
@@ -160,7 +165,7 @@ def render_driver_logs_tab(tracking_df: pd.DataFrame, driver_exec_df: pd.DataFra
             if status_data:
                 combined_status_df = pd.concat(status_data)
                 
-                status_order = ['SUCCESS', 'FAILED', 'UNKNOWN', 'N/A']
+                status_order = ['SUCCESS', 'FAILED', 'UNKNOWN', 'N/A'] # Ensure UNKNOWN/N/A are handled
                 combined_status_df['Status'] = pd.Categorical(combined_status_df['Status'], categories=status_order, ordered=True)
                 combined_status_df = combined_status_df.sort_values(['Collection_Type', 'Status'])
 
@@ -178,7 +183,7 @@ def render_driver_logs_tab(tracking_df: pd.DataFrame, driver_exec_df: pd.DataFra
                 fig_collection_status.update_yaxes(categoryorder="array", categoryarray=['Refresh History', 'Metadata Snapshot'][::-1])
                 st.plotly_chart(fig_collection_status, use_container_width=True)
             else:
-                st.info("No collection status data to display.", icon="ℹ️")
+                st.info("No collection status data to display for actively monitored tables.", icon="ℹ️") # More specific message
         else:
             st.info("No tracking data available to display collection status distribution.", icon="ℹ️")
 
