@@ -1,69 +1,11 @@
-@st.cache_data(ttl=300) # Cache for 5 minutes
-def fetch_driver_execution_history_cached():
-    """
-    Fetches execution history of the main driver procedure from ACCOUNT_USAGE.QUERY_HISTORY.
-    """
-    st.info("Fetching driver execution history...", icon="⚙️")
-    session = get_snowflake_session()
-    try:
-        # IMPORTANT: Replace YOUR_DB.YOUR_SCHEMA.SP_DRIVE_ALL_DT_COLLECTION
-        # with the actual fully qualified name of your driver procedure.
-        # Adjust time range as needed (e.g., last 30 days)
-        driver_hist_df = session.sql(f"""
-            SELECT
-                QUERY_ID,
-                QUERY_TEXT,
-                START_TIME,
-                END_TIME,
-                TOTAL_ELAPSED_TIME / 1000 AS EXECUTION_TIME_SECONDS, -- Convert ms to seconds
-                EXECUTION_STATUS
-            FROM SNOWFLAKE.ACCOUNT_USAGE.QUERY_HISTORY
-            WHERE
-                QUERY_TEXT LIKE '%CALL YOUR_DB.YOUR_SCHEMA.SP_DRIVE_ALL_DT_COLLECTION%' -- Adjust if name is different
-                AND QUERY_TYPE = 'CALL' -- Ensure it's a procedure call
-                AND START_TIME >= DATEADD(day, -30, CURRENT_TIMESTAMP()) -- Last 30 days
-            ORDER BY START_TIME DESC
-        """).to_pandas()
-        
-        if not driver_hist_df.empty:
-            driver_hist_df['START_TIME'] = pd.to_datetime(driver_hist_df['START_TIME'])
-            driver_hist_df['END_TIME'] = pd.to_datetime(driver_hist_df['END_TIME'])
-            # Filter for successful runs for duration analysis
-            driver_hist_df_success = driver_hist_df[driver_hist_df['EXECUTION_STATUS'] == 'SUCCESS']
-            # Take the latest successful run for KPI
-            latest_run = driver_hist_df_success.iloc[0] if not driver_hist_df_success.empty else None
-            
-            # Store latest run info in session state for easy access in dashboard
-            st.session_state.last_driver_run_duration = latest_run['EXECUTION_TIME_SECONDS'] if latest_run is not None else np.nan
-            st.session_state.last_driver_run_start_time = latest_run['START_TIME'] if latest_run is not None else None
-            st.session_state.driver_history_df = driver_hist_df_success # Store filtered successful runs for line chart
-        else:
-            st.session_state.last_driver_run_duration = np.nan
-            st.session_state.last_driver_run_start_time = None
-            st.session_state.driver_history_df = pd.DataFrame()
-            
-        st.success("Driver execution history loaded successfully!", icon="✅")
-        return driver_hist_df # Return the full df, or modified df
-
-    except Exception as e:
-        st.error(f"Error fetching driver execution history: {e}. Ensure MONITOR USAGE is granted.", icon="❌")
-        st.session_state.last_driver_run_duration = np.nan
-        st.session_state.last_driver_run_start_time = None
-        st.session_state.driver_history_df = pd.DataFrame()
-        return pd.DataFrame()
-
-
-
-
-
-
 # tabs/driver_logs_tab.py
 import streamlit as st
 import pandas as pd
 import plotly.express as px
 import numpy as np
+import datetime # Import for datetime operations
 
-# Helper function to convert seconds to a more readable format (re-used from dt_health_tab)
+# Helper function to convert seconds to a more readable format
 def format_seconds_to_readable(seconds_series, format_type):
     if format_type == "seconds":
         return seconds_series.round(1).astype(str) + "s"
@@ -95,6 +37,7 @@ def format_seconds_to_readable(seconds_series, format_type):
         return seconds_series.apply(mix_format)
     return seconds_series
 
+
 def render_driver_logs_tab(tracking_df: pd.DataFrame, driver_exec_df: pd.DataFrame): # Accepts both DFs
     st.header("Collection Driver Status & Logs")
     st.write("Monitor the health and execution status of the data collection pipeline.")
@@ -103,25 +46,33 @@ def render_driver_logs_tab(tracking_df: pd.DataFrame, driver_exec_df: pd.DataFra
     st.markdown("---")
     st.subheader("Overall Driver Health KPIs")
 
-    if tracking_df.empty:
-        st.info("No tracking data available. Ensure the collection driver is running and populating 'T_DYNAMIC_TABLE_TRACKING'.", icon="ℹ️")
-        # Still proceed to show driver_exec_df KPIs if available
-    
+    # --- Data preparation for KPIs ---
     total_tables_tracked = tracking_df['QUALIFIED_NAME'].nunique() if not tracking_df.empty else 0
     active_tables_tracked = tracking_df[tracking_df['IS_ACTIVE'] == True]['QUALIFIED_NAME'].nunique() if not tracking_df.empty else 0
     
-    # KPIs for actively monitoring counts
     actively_monitoring_refresh_history = tracking_df[(tracking_df['IS_ACTIVE'] == True) & (tracking_df['TRACK_REFRESH_HISTORY'] == True)]['QUALIFIED_NAME'].nunique() if not tracking_df.empty else 0
     actively_monitoring_metadata_snapshot = tracking_df[(tracking_df['IS_ACTIVE'] == True) & (tracking_df['TRACK_METADATA_SNAPSHOT'] == True)]['QUALIFIED_NAME'].nunique() if not tracking_df.empty else 0
 
+    # For Last Driver Run Time and Duration, rely on driver_exec_df
+    last_successful_run = None
+    if not driver_exec_df.empty:
+        driver_exec_df_success = driver_exec_df[driver_exec_df['EXECUTION_STATUS'] == 'SUCCESS'].copy() # Ensure copy for filtering
+        if not driver_exec_df_success.empty:
+            last_successful_run = driver_exec_df_success.sort_values('START_TIME', ascending=False).iloc[0]
+    
+    # Calculate Last Driver Run Time and Duration
+    last_driver_run_start_time = None
+    last_driver_run_duration_seconds = np.nan
+    if last_successful_run is not None:
+        last_driver_run_start_time = last_successful_run['START_TIME']
+        last_driver_run_duration_seconds = last_successful_run['EXECUTION_TIME_SECONDS']
+    
+    # Format for display
+    last_driver_run_time_fmt = last_driver_run_start_time.strftime('%Y-%m-%d %H:%M:%S') if isinstance(last_driver_run_start_time, pd.Timestamp) else "N/A"
+    last_driver_run_duration_fmt = format_seconds_to_readable(pd.Series([last_driver_run_duration_seconds]), "mixed").iloc[0] if not pd.isna(last_driver_run_duration_seconds) else "N/A"
 
-    # Driver duration KPIs from driver_exec_df (session state variables are more direct here)
-    last_driver_run_duration = st.session_state.get('last_driver_run_duration', np.nan)
-    last_driver_run_start_time = st.session_state.get('last_driver_run_start_time', None)
 
-    # Format duration
-    last_driver_run_duration_fmt = format_seconds_to_readable(pd.Series([last_driver_run_duration]), "mixed").iloc[0] if not pd.isna(last_driver_run_duration) else "N/A"
-
+    # Display KPIs
     kpi_cols_driver_1 = st.columns(3)
     with kpi_cols_driver_1[0]:
         st.markdown(f"<p style='font-size:14px; margin-bottom:0;'>Total Tables Tracked</p>", unsafe_allow_html=True)
@@ -131,7 +82,7 @@ def render_driver_logs_tab(tracking_df: pd.DataFrame, driver_exec_df: pd.DataFra
         st.markdown(f"<h3 style='margin-top:0;'>{active_tables_tracked}</h3>", unsafe_allow_html=True)
     with kpi_cols_driver_1[2]:
         st.markdown(f"<p style='font-size:14px; margin-bottom:0;'>Last Driver Run Time</p>", unsafe_allow_html=True)
-        st.markdown(f"<h3 style='margin-top:0;'>{last_driver_run_start_time.strftime('%Y-%m-%d %H:%M:%S') if isinstance(last_driver_run_time, pd.Timestamp) else 'N/A'}</h3>", unsafe_allow_html=True)
+        st.markdown(f"<h3 style='margin-top:0;'>{last_driver_run_time_fmt}</h3>", unsafe_allow_html=True)
 
     kpi_cols_driver_2 = st.columns(3)
     with kpi_cols_driver_2[0]:
@@ -154,15 +105,17 @@ def render_driver_logs_tab(tracking_df: pd.DataFrame, driver_exec_df: pd.DataFra
         st.subheader("Driver Execution Time Trend")
         st.write("Historical execution times of the main collection driver program.")
 
-        if not driver_exec_df.empty:
-            # Sort by start time for the line chart
-            driver_exec_df_sorted = driver_exec_df.sort_values('START_TIME')
+        # Filter for successful runs for the trend chart
+        driver_exec_df_success_for_chart = driver_exec_df[driver_exec_df['EXECUTION_STATUS'] == 'SUCCESS'].copy()
+        if not driver_exec_df_success_for_chart.empty:
+            driver_exec_df_success_for_chart = driver_exec_df_success_for_chart.sort_values('START_TIME')
             
-            # Format time for display on hover/y-axis if desired
-            driver_exec_df_sorted['EXECUTION_TIME_FMT'] = format_seconds_to_readable(driver_exec_df_sorted['EXECUTION_TIME_SECONDS'], "mixed")
+            driver_exec_df_success_for_chart['EXECUTION_TIME_FMT'] = format_seconds_to_readable(
+                driver_exec_df_success_for_chart['EXECUTION_TIME_SECONDS'], "mixed"
+            )
 
             fig_driver_trend = px.line(
-                driver_exec_df_sorted,
+                driver_exec_df_success_for_chart,
                 x='START_TIME',
                 y='EXECUTION_TIME_SECONDS',
                 title='Driver Program Execution Duration Over Time',
@@ -170,14 +123,12 @@ def render_driver_logs_tab(tracking_df: pd.DataFrame, driver_exec_df: pd.DataFra
                 line_shape='linear',
                 markers=True
             )
-            fig_driver_trend.update_layout(hovermode="x unified") # Show all points in hover
-            # Customize hover to show formatted time
+            fig_driver_trend.update_layout(hovermode="x unified")
             fig_driver_trend.update_traces(
                 hovertemplate='Time: %{x}<br>Duration: %{customdata}<extra></extra>',
-                customdata=driver_exec_df_sorted['EXECUTION_TIME_FMT']
+                customdata=driver_exec_df_success_for_chart['EXECUTION_TIME_FMT']
             )
 
-            # Option for log scale on Y-axis
             use_log_scale_driver_trend = st.checkbox("Log Scale Y-axis (Driver Trend)", key="log_scale_driver_trend")
             if use_log_scale_driver_trend:
                 fig_driver_trend.update_yaxes(type='log')
@@ -228,7 +179,7 @@ def render_driver_logs_tab(tracking_df: pd.DataFrame, driver_exec_df: pd.DataFra
                 st.plotly_chart(fig_collection_status, use_container_width=True)
             else:
                 st.info("No collection status data to display.", icon="ℹ️")
-        else: # tracking_df is empty
+        else:
             st.info("No tracking data available to display collection status distribution.", icon="ℹ️")
 
     st.divider()
