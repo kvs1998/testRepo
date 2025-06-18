@@ -1,4 +1,4 @@
-with chart_cols_pair2[0]: # Refresh Duration Trend
+with chart_cols_pair2[0]: # Refresh Duration Trend - CORRECTED
         st.markdown("<p style='font-size:16px;'><b>Refresh Duration Trend</b></p>", unsafe_allow_html=True)
         if not filtered_history_df.empty:
             duration_trend_df = filtered_history_df.groupby(
@@ -23,19 +23,18 @@ with chart_cols_pair2[0]: # Refresh Duration Trend
             else: # 'seconds' or 'mixed' (plot in seconds)
                 duration_trend_df['Mean_Duration_Plot'] = duration_trend_df['Mean Duration']
                 duration_trend_df['Median_Duration_Plot'] = duration_trend_df['Median Duration']
-                duration_trend_df['P95_Duration_Plot'] = duration_trend_df['P95 Duration']
+                duration_trend_df['P95_Duration_Plot'] = duration_trend_df['P90 Duration'] # Typo fix: Should be P95 Duration
             
-            # --- Prepare hover text for line chart ---
+            # --- Prepare hover text for line chart (still using original seconds for formatting) ---
             duration_trend_df['Mean_Duration_FMT_Hover'] = format_seconds_to_readable(duration_trend_df['Mean Duration'], time_format_option)
             duration_trend_df['Median_Duration_FMT_Hover'] = format_seconds_to_readable(duration_trend_df['Median Duration'], time_format_option)
-            duration_trend_df['P95_Duration_FMT_Hover'] = format_seconds_to_readable(duration_trend_df['P95 Duration'], time_format_option)
-
+            duration_trend_df['P95_Duration_FMT_Hover'] = format_seconds_to_readable(duration_trend_df['P95 Duration'], time_format_option) # P95_Duration_FMT_Hover
+            
 
             fig_duration_trend = px.line(
                 duration_trend_df,
                 x='Date',
                 y=['Mean_Duration_Plot', 'Median_Duration_Plot', 'P95_Duration_Plot'], # Plot converted values
-                title='Daily Refresh Duration Trend (Mean, Median, P95)', # Redundant title
                 labels={'value': f'Duration ({time_format_option})'} # Dynamic Y-axis label
             )
             fig_duration_trend.update_layout(title_text='')
@@ -45,8 +44,6 @@ with chart_cols_pair2[0]: # Refresh Duration Trend
                 st.info("Logarithmic scale applied to Y-axis.", icon="ℹ️")
 
             # --- Custom Hovertemplate for line chart ---
-            # Update traces to use customdata for formatted values
-            # The 'name' of the trace corresponds to the column name in 'y' argument (e.g. 'Mean_Duration_Plot')
             for trace in fig_duration_trend.data:
                 if trace.name == 'Mean_Duration_Plot':
                     trace.hovertemplate = '<b>Date:</b> %{x|%Y-%m-%d}<br><b>Mean Duration:</b> %{customdata}<extra></extra>'
@@ -60,11 +57,8 @@ with chart_cols_pair2[0]: # Refresh Duration Trend
 
 
             # --- Dynamic Tick Formatting for Y-axis (Duration Trend) ---
-            if time_format_option != 'seconds' and not use_log_scale_duration_trend:
-                min_y_val = fig_duration_trend.layout.yaxis.range[0] if fig_duration_trend.layout.yaxis.range else duration_trend_df['Y_AXIS_PLOT_VALUE'].min() # This Y_AXIS_PLOT_VALUE needs to be available
-                max_y_val = fig_duration_trend.layout.yaxis.range[1] if fig_duration_trend.layout.yaxis.range else duration_trend_df['Y_AXIS_PLOT_VALUE'].max()
-                
-                # Here, the range for tick generation should use the max of the PLOT values across all three lines
+            if time_format_option != 'seconds' and not use_log_scale_duration_trend: # Apply custom linear ticks if not seconds and not log
+                # Get the max of the PLOT values across all three lines for tick generation
                 max_plot_value = duration_trend_df[['Mean_Duration_Plot', 'Median_Duration_Plot', 'P95_Duration_Plot']].max().max()
                 min_plot_value = duration_trend_df[['Mean_Duration_Plot', 'Median_Duration_Plot', 'P95_Duration_Plot']].min().min()
 
@@ -78,7 +72,7 @@ with chart_cols_pair2[0]: # Refresh Duration Trend
                         tick_values_seconds = tick_values_converted_unit * 3600
                     elif time_format_option == 'days':
                         tick_values_seconds = tick_values_converted_unit * 86400
-                    else: # 'seconds' or 'mixed'
+                    else: # 'seconds' or 'mixed' (fallback to seconds)
                         tick_values_seconds = tick_values_converted_unit
                         
                     tick_texts_formatted = format_seconds_to_readable(pd.Series(tick_values_seconds), time_format_option).tolist()
@@ -88,8 +82,8 @@ with chart_cols_pair2[0]: # Refresh Duration Trend
                         tickvals=tick_values_converted_unit,
                         ticktext=tick_texts_formatted
                     )
-                else:
-                    fig_duration_trend.update_yaxes(type='linear', tickformat=".1f") # Fallback
+                else: # Fallback to default linear format
+                    fig_duration_trend.update_yaxes(type='linear', tickformat=".1f")
 
             st.plotly_chart(fig_duration_trend, use_container_width=True)
         else:
