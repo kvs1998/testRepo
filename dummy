@@ -1,16 +1,17 @@
-# Assuming filtered_history_df and time_format_option are already defined in the scope,
-# and format_seconds_to_readable is available.
-
 # --- START OF "Refresh Duration Distribution" Histogram SNIPPET (chart_cols_pair3[0]) ---
+# This snippet assumes filtered_history_df and time_format_option are already defined in the scope,
+# and format_seconds_to_readable is available.
 
 with chart_cols_pair3[0]: # Refresh Duration Distribution (Histogram)
     st.markdown("<p style='font-size:16px;'><b>Refresh Duration Distribution</b></p>", unsafe_allow_html=True)
-    cols_chart_header = st.columns([0.8, 0.2]) # Internal columns for title and checkbox
+    cols_chart_header = st.columns([0.6, 0.2, 0.2]) # Added one more column for Y-axis checkbox
     with cols_chart_header[0]:
         st.write("Distribution of refresh durations.")
     with cols_chart_header[1]:
-        use_log_scale_duration_hist = st.checkbox("Log Scale X-axis", key="log_scale_duration_hist_dt_state")
-    
+        use_log_scale_duration_hist_x = st.checkbox("Log X-axis", key="log_scale_duration_hist_x_dt_state") # X-axis log scale
+    with cols_chart_header[2]:
+        use_log_scale_duration_hist_y = st.checkbox("Log Y-axis", key="log_scale_duration_hist_y_dt_state") # Y-axis log scale
+        
     if 'REFRESH_DURATION_SEC' in filtered_history_df.columns and not filtered_history_df['REFRESH_DURATION_SEC'].empty:
         # --- APPLY NO_DATA FILTER HERE FOR DURATION ANALYSIS ---
         duration_data_for_hist_df = filtered_history_df[
@@ -21,7 +22,6 @@ with chart_cols_pair3[0]: # Refresh Duration Distribution (Histogram)
             st.info("No data available for duration distribution after excluding 'NO_DATA' refreshes. Please adjust filters.", icon="ℹ️")
         else:
             # --- TRANSFORM X-AXIS DATA TO SELECTED DISPLAY UNIT FOR PLOTTING ---
-            # Define the divisor based on the selected time_format_option
             if time_format_option == "minutes":
                 unit_divisor_hist = 60
             elif time_format_option == "hours":
@@ -36,13 +36,12 @@ with chart_cols_pair3[0]: # Refresh Duration Distribution (Histogram)
             # Get the Series of data points to plot for the histogram
             duration_values_to_plot = duration_data_for_hist_df['X_AXIS_PLOT_VALUE'].dropna().copy()
             
-            # Filter out non-positive values if log scale is to be applied
-            if use_log_scale_duration_hist:
-                initial_count_before_log_filter = len(duration_values_to_plot)
+            # Filter out non-positive values if log scale for X-axis is to be applied
+            if use_log_scale_duration_hist_x:
+                initial_count_before_log_filter_x = len(duration_values_to_plot)
                 duration_values_to_plot = duration_values_to_plot.apply(lambda x: x if x > 0 else 1e-9)
-                if len(duration_values_to_plot) < initial_count_before_log_filter:
-                    st.info(f"Note: {initial_count_before_log_filter - len(duration_values_to_plot)} data point(s) with zero/negative values were excluded for log scale histogram display.", icon="ℹ️")
-
+                if len(duration_values_to_plot) < initial_count_before_log_filter_x:
+                    st.info(f"Note: {initial_count_before_log_filter_x - len(duration_values_to_plot)} data point(s) with zero/negative X values were excluded for log X-axis.", icon="ℹ️")
 
             if not duration_values_to_plot.empty:
                 fig_duration_hist = px.histogram(
@@ -50,25 +49,22 @@ with chart_cols_pair3[0]: # Refresh Duration Distribution (Histogram)
                     x=duration_values_to_plot.name, # Use the actual series name
                     nbins=20, # Fixed bins, or could make dynamic based on range
                     labels={duration_values_to_plot.name: f'Duration ({time_format_option})'}, # Dynamic label
-                    text_auto=False
+                    text_auto=False # Don't show text on bars by default
                 )
                 fig_duration_hist.update_layout(bargap=0.1, title_text='') # Remove title
 
-                if use_log_scale_duration_hist:
+                # --- Dynamic X-axis Tick Formatting and Log Scale ---
+                if use_log_scale_duration_hist_x:
                     fig_duration_hist.update_xaxes(type='log', rangemode='tozero')
-                    st.info("Logarithmic scale applied to X-axis. Zero counts are handled gracefully.", icon="ℹ️")
-                
-                # --- Dynamic X-axis Tick Formatting for Histogram ---
-                # Only apply custom ticks if NOT using log scale (Plotly handles log ticks well)
-                if not use_log_scale_duration_hist:
+                    st.info("Logarithmic X-axis applied. Zero counts are handled gracefully.", icon="ℹ️")
+                else: # Apply custom linear ticks if not log
                     min_x_val = fig_duration_hist.layout.xaxis.range[0] if fig_duration_hist.layout.xaxis.range else duration_values_to_plot.min()
                     max_x_val = fig_duration_hist.layout.xaxis.range[1] if fig_duration_hist.layout.xaxis.range else duration_values_to_plot.max()
                     
                     if max_x_val > min_x_val and max_x_val > 0:
-                        # Robust tick generation
-                        if max_x_val == min_x_val:
+                        if max_x_val == min_x_val: # Single value
                             tick_values_converted_unit = [min_x_val]
-                        elif max_x_val - min_x_val < 1e-6 and max_x_val > 0:
+                        elif max_x_val - min_x_val < 1e-6 and max_x_val > 0: # Very small range
                             tick_values_converted_unit = [min_x_val, max_x_val]
                             if len(set(tick_values_converted_unit)) < 2:
                                 tick_values_converted_unit.append(min_x_val + (max_x_val - min_x_val) / 2)
@@ -77,9 +73,7 @@ with chart_cols_pair3[0]: # Refresh Duration Distribution (Histogram)
                             num_ticks = 5
                             tick_values_converted_unit = np.linspace(min_x_val, max_x_val, num=num_ticks, endpoint=True)
                         
-                        # Convert these tick values BACK to seconds for format_seconds_to_readable
-                        tick_values_seconds = pd.Series(tick_values_converted_unit) * unit_divisor_hist
-                        
+                        tick_values_seconds = pd.Series(tick_values_converted_unit) * unit_divisor_hist # Convert back to seconds
                         tick_texts_formatted = format_seconds_to_readable(tick_values_seconds, time_format_option).tolist()
                         
                         fig_duration_hist.update_xaxes(
@@ -87,12 +81,19 @@ with chart_cols_pair3[0]: # Refresh Duration Distribution (Histogram)
                             tickvals=tick_values_converted_unit,
                             ticktext=tick_texts_formatted
                         )
-                    else: # Fallback for very small range or zero
-                        fig_duration_hist.update_xaxes(type='linear', tickformat=".1f") # Default Plotly numerical ticks
+                    else: # Fallback for very small non-positive ranges or constant zero
+                        fig_duration_hist.update_xaxes(type='linear', tickformat=".1f") # Simple float format
+
+                # --- Dynamic Y-axis Log Scale (Count) ---
+                if use_log_scale_duration_hist_y:
+                    fig_duration_hist.update_yaxes(type='log', title='Count (Log Scale)', rangemode='tozero')
+                    st.info("Logarithmic Y-axis applied. Zero counts are handled gracefully.", icon="ℹ️")
+                else:
+                    fig_duration_hist.update_yaxes(type='linear', title='Count') # Ensure title is reset if going back to linear
                             
                 st.plotly_chart(fig_duration_hist, use_container_width=True)
             else: # duration_values_to_plot became empty after filtering for log scale or general dropna
-                st.info("No refresh duration data to display for histogram after filtering for positive values.", icon="ℹ️")
+                st.info("No refresh duration data to display for histogram after filtering for positive X-axis values.", icon="ℹ️")
         # This else-block handles if duration_data_for_hist_df was empty initially (after NO_DATA filter)
         else:
             st.info("No REFRESH_DURATION_SEC data available after excluding 'NO_DATA' refreshes.", icon="ℹ️")
