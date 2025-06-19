@@ -1,119 +1,55 @@
-if not filtered_history_df.empty:
-        # --- APPLY NO_DATA FILTER HERE FOR DURATION ANALYSIS ---
-        duration_analysis_df = filtered_history_df[
-            filtered_history_df['REFRESH_ACTION'] != 'NO_DATA'
-        ].copy()
-
-        if duration_analysis_df.empty:
-            st.info("No data available for duration trend analysis after excluding 'NO_DATA' refreshes. Please adjust filters.", icon="ℹ️")
-        else:
-            # Aggregate daily average, median, and 95th percentile duration
-            # Ensure a complete date range for potential gaps to be connected
-            full_date_range = pd.date_range(
-                start=duration_analysis_df['DATA_TIMESTAMP_DT'].min().normalize(),
-                end=duration_analysis_df['DATA_TIMESTAMP_DT'].max().normalize(),
-                freq='D'
-            )
+with chart_cols_pair3[0]: # Refresh Duration Distribution (Histogram) - CORRECTED PLACEMENT
+        cols_chart_header = st.columns([0.8, 0.2]) # Internal columns for title and checkbox
+        with cols_chart_header[0]:
+            st.markdown("<p style='font-size:16px;'><b>Refresh Duration Distribution</b></p>", unsafe_allow_html=True)
+        with cols_chart_header[1]:
+            use_log_scale_duration_hist = st.checkbox("Log Scale X-axis", key="log_scale_duration_hist_dt_state")
+        st.write("Distribution of refresh durations.")
+        
+        if 'REFRESH_DURATION_SEC' in filtered_history_df.columns and not filtered_history_df['REFRESH_DURATION_SEC'].empty:
+            duration_data = filtered_history_df['REFRESH_DURATION_SEC'].dropna().copy()
             
-            duration_trend_df = duration_analysis_df.groupby(
-                pd.Grouper(key='DATA_TIMESTAMP_DT', freq='D')
-            )['REFRESH_DURATION_SEC'].agg(['mean', 'median', lambda x: x.quantile(0.95)]).reindex(full_date_range, fill_value=np.nan).reset_index() # Reindex and fill with NaN
-            
-            duration_trend_df.columns = ['Date', 'Mean Duration', 'Median Duration', 'P95 Duration']
-
-            # --- TRANSFORM Y-AXIS DATA TO SELECTED DISPLAY UNIT FOR PLOTTING ---
-            # Define the divisor based on the selected time_format_option
-            if time_format_option == "minutes":
-                unit_divisor = 60
-            elif time_format_option == "hours":
-                unit_divisor = 3600
-            elif time_format_option == "days":
-                unit_divisor = 86400
-            else: # "seconds" or "mixed" (plot in seconds, so divisor is 1)
-                unit_divisor = 1
-
-            duration_trend_df['Mean_Duration_Plot'] = duration_trend_df['Mean Duration'] / unit_divisor
-            duration_trend_df['Median_Duration_Plot'] = duration_trend_df['Median Duration'] / unit_divisor
-            duration_trend_df['P95_Duration_Plot'] = duration_trend_df['P95 Duration'] / unit_divisor
-            
-            # --- Prepare hover text for line chart (still using original seconds for formatting) ---
-            duration_trend_df['Mean_Duration_FMT_Hover'] = format_seconds_to_readable(duration_trend_df['Mean Duration'], time_format_option)
-            duration_trend_df['Median_Duration_FMT_Hover'] = format_seconds_to_readable(duration_trend_df['Median Duration'], time_format_option)
-            duration_trend_df['P95_Duration_FMT_Hover'] = format_seconds_to_readable(duration_trend_df['P95 Duration'], time_format_option)
+            if use_log_scale_duration_hist:
+                 duration_data = duration_data.apply(lambda x: x if x > 0 else 1e-9)
 
 
-            # --- CREATE PLOTLY EXPRESS LINE CHART ---
-            fig_duration_trend = px.line(
-                duration_trend_df,
-                x='Date',
-                y=['Mean_Duration_Plot', 'Median_Duration_Plot', 'P95_Duration_Plot'], # Plot converted values
-                labels={'value': f'Duration ({time_format_option})'} # Dynamic Y-axis label
-            )
-            fig_duration_trend.update_layout(title_text='', hovermode='x unified')
+            if not duration_data.empty:
+                fig_duration_hist = px.histogram(
+                    duration_data,
+                    x="REFRESH_DURATION_SEC",
+                    nbins=20,
+                    labels={'REFRESH_DURATION_SEC': f'Duration ({time_format_option})'}, # Dynamic label based on format
+                    text_auto=False
+                )
+                fig_duration_hist.update_layout(bargap=0.1, title_text='')
 
-            if use_log_scale_duration_trend:
-                fig_duration_trend.update_yaxes(type='log', title='Duration (Log Scale)', rangemode='tozero')
-                st.info("Logarithmic scale applied to Y-axis.", icon="ℹ️")
-
-            # --- Custom Hovertemplate for line chart ---
-            for trace in fig_duration_trend.data:
-                # Use a map to get the correct formatted column based on the trace name
-                hover_column_map = {
-                    'Mean_Duration_Plot': 'Mean_Duration_FMT_Hover',
-                    'Median_Duration_Plot': 'Median_Duration_FMT_Hover',
-                    'P95_Duration_Plot': 'P95_Duration_FMT_Hover'
-                }
-                # Ensure the customdata is set for the corresponding trace's formatted hover values
-                trace.customdata = duration_trend_df[hover_column_map[trace.name]]
+                if use_log_scale_duration_hist:
+                    fig_duration_hist.update_xaxes(type='log', rangemode='tozero')
+                    st.info("Logarithmic scale applied to X-axis. Zero counts are handled gracefully.", icon="ℹ️")
                 
-                # Set the hovertemplate to use %{customdata} for the formatted value
-                if trace.name == 'Mean_Duration_Plot':
-                    trace.hovertemplate = '<b>Date:</b> %{x|%Y-%m-%d}<br><b>Mean Duration:</b> %{customdata}<extra></extra>'
-                elif trace.name == 'Median_Duration_Plot':
-                    trace.hovertemplate = '<b>Date:</b> %{x|%Y-%m-%d}<br><b>Median Duration:</b> %{customdata}<extra></extra>'
-                elif trace.name == 'P95_Duration_Plot':
-                    trace.hovertemplate = '<b>Date:</b> %{x|%Y-%m-%d}<br><b>P95 Duration:</b> %{customdata}<extra></extra>'
-
-            # --- Apply connectgaps=True to connect lines over missing data ---
-            fig_duration_trend.update_traces(connectgaps=True)
-
-
-            # --- Dynamic Tick Formatting for Y-axis (Duration Trend) ---
-            if not use_log_scale_duration_trend: # Apply custom linear ticks if not log
-                # Get the overall min/max of the PLOTTED values across all three lines for tick generation
-                combined_plot_values = duration_trend_df[['Mean_Duration_Plot', 'Median_Duration_Plot', 'P95_Duration_Plot']].stack().dropna()
-                
-                if not combined_plot_values.empty:
-                    min_plot_value = combined_plot_values.min()
-                    max_plot_value = combined_plot_values.max()
-
-                    # Robust tick generation: Handle very small ranges or constant values
-                    if max_plot_value == min_plot_value: # All values are the same
-                        tick_values_converted_unit = [min_plot_value]
-                    elif max_plot_value - min_plot_value < 1e-6 and max_plot_value > 0: # Very small non-zero range
-                        tick_values_converted_unit = [min_plot_value, max_plot_value]
-                        if len(set(tick_values_converted_unit)) < 2:
-                             tick_values_converted_unit.append(min_plot_value + (max_plot_value - min_plot_value) / 2)
-                        tick_values_converted_unit = sorted(list(set(tick_values_converted_unit)))
-                    else: # Normal range
-                        num_ticks = 5 # Default number of ticks for linear scale
-                        tick_values_converted_unit = np.linspace(min_plot_value, max_plot_value, num=num_ticks, endpoint=True)
+                if time_format_option != 'seconds':
+                    min_x_val = fig_duration_hist.layout.xaxis.range[0] if fig_duration_hist.layout.xaxis.range else duration_data.min()
+                    max_x_val = fig_duration_hist.layout.xaxis.range[1] if fig_duration_hist.layout.xaxis.range else duration_data.max()
                     
-                    # Convert these tick values BACK to seconds for format_seconds_to_readable
-                    tick_values_seconds = pd.Series(tick_values_converted_unit) * unit_divisor # Use the same divisor as applied for plotting
+                    if min_x_val < 1e-9 and use_log_scale_duration_hist:
+                        min_x_val = 1.0
                     
-                    # Format the tick text. If values are tiny, format_seconds_to_readable will handle it.
-                    tick_texts_formatted = format_seconds_to_readable(tick_values_seconds, time_format_option).tolist()
-                    
-                    fig_duration_trend.update_yaxes(
-                        type='linear',
-                        tickvals=tick_values_converted_unit,
-                        ticktext=tick_texts_formatted
-                    )
-                else: # If combined_plot_values is empty (e.g., all durations are NaN or 0)
-                    fig_duration_trend.update_yaxes(type='linear', tickformat=".1f") # Default Plotly numerical ticks (e.0.0, 0.1)
-
-            st.plotly_chart(fig_duration_trend, use_container_width=True)
-        # This else-block now specifically handles if duration_analysis_df was empty
+                    if max_x_val > 0:
+                        if not use_log_scale_duration_hist:
+                            tick_values = np.linspace(min_x_val, max_x_val, num=5, endpoint=True)
+                        else:
+                            log_min = np.floor(np.log10(min_x_val)) if min_x_val > 0 else 0
+                            log_max = np.ceil(np.log10(max_x_val))
+                            tick_values = np.logspace(log_min, log_max, int(log_max - log_min) + 1)
+                            tick_values = tick_values[(tick_values >= min_x_val) & (tick_values <= max_x_val)]
+                            if not tick_values.size:
+                                tick_values = np.linspace(min_x_val, max_x_val, 3)
+                            
+                        tick_texts = format_seconds_to_readable(pd.Series(tick_values), time_format_option).tolist()
+                        fig_duration_hist.update_xaxes(tickvals=tick_values, ticktext=tick_texts)
+                            
+                st.plotly_chart(fig_duration_hist, use_container_width=True)
+            else:
+                st.info("No refresh duration data to display for histogram.", icon="ℹ️")
         else:
-            st.info("No REFRESH_DURATION_SEC data available for trend analysis after excluding 'NO_DATA' refreshes. Please adjust filters.", icon="ℹ️")
+            st.info("No REFRESH_DURATION_SEC data available.", icon="ℹ️")
