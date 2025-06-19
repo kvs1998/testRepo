@@ -1,0 +1,194 @@
+# tabs/dt_notification_tab.py
+import streamlit as st
+import pandas as pd
+from datetime import datetime, timedelta
+
+# Assuming format_seconds_to_readable is available from a central helper or copied here
+def format_seconds_to_readable(seconds_series, format_type):
+    if format_type == "seconds":
+        return seconds_series.round(1).astype(str) + "s"
+    elif format_type == "minutes":
+        return (seconds_series / 60).round(1).astype(str) + "m"
+    elif format_type == "hours":
+        return (seconds_series / 3600).round(1).astype(str) + "h"
+    elif format_type == "days":
+        return (seconds_series / 86400).round(1).astype(str) + "d"
+    elif format_type == "mixed":
+        def mix_format(s):
+            if pd.isna(s) or s is None: return "N/A"
+            s = float(s)
+            if s == 0: return "0s"
+            days = int(s // 86400)
+            s_rem = s % 86400
+            hours = int(s_rem // 3600)
+            s_rem %= 3600
+            minutes = int(s_rem // 60)
+            seconds = s_rem % 60
+            
+            parts = []
+            if days > 0: parts.append(f"{days}d")
+            if hours > 0: parts.append(f"{hours}h")
+            if minutes > 0: parts.append(f"{minutes}m")
+            if seconds > 0 and (not parts or seconds >= 1):
+                parts.append(f"{seconds:.1f}s")
+            elif s > 0 and not parts: # Handle durations like 0.5s if no other units
+                parts.append(f"{s:.1f}s")
+            return " ".join(parts) if parts else "0s"
+        return seconds_series.apply(mix_format)
+    return seconds_series
+
+def generate_email_content(metadata_df: pd.DataFrame, history_df: pd.DataFrame, dashboard_url: str = "YOUR_DASHBOARD_URL_HERE"):
+    """
+    Generates high-level email content based on filtered metadata and history DataFrames.
+    This function should be callable by your email sending logic (e.g., Snowflake Proc, Lambda).
+    """
+    email_parts = []
+    
+    # --- Overall DT Health Summary (from DT Health tab logic) ---
+    email_parts.append("---")
+    email_parts.append("**📊 Current Health Snapshot:**")
+
+    if metadata_df.empty:
+        email_parts.append("No current metadata available.")
+    else:
+        total_dt_monitored = metadata_df['QUALIFIED_NAME'].nunique()
+        running_dt_count = metadata_df[
+            (metadata_df['SCHEDULING_STATE_STATUS'] == 'RUNNING') & 
+            (metadata_df['LAST_COMPLETED_REFRESH_STATE'] == 'SUCCEEDED')
+        ]['QUALIFIED_NAME'].nunique()
+        suspended_dt_count = metadata_df[
+            metadata_df['SCHEDULING_STATE_STATUS'] == 'SUSPENDED'
+        ]['QUALIFIED_NAME'].nunique()
+        running_but_failed_dt_count = metadata_df[
+            (metadata_df['SCHEDULING_STATE_STATUS'] == 'RUNNING') & 
+            (metadata_df['LAST_COMPLETED_REFRESH_STATE'].isin(['FAILED', 'UPSTREAM_FAILED', 'CANCELLED']))
+        ]['QUALIFIED_NAME'].nunique()
+        executing_refresh_dt_count = metadata_df[metadata_df['EXECUTING_REFRESH_QUERY_ID'].notna()]['QUALIFIED_NAME'].nunique()
+        avg_mean_lag = metadata_df['MEAN_LAG_SEC'].mean()
+        max_lag = metadata_df['MAXIMUM_LAG_SEC'].max()
+
+        avg_mean_lag_fmt = format_seconds_to_readable(pd.Series([avg_mean_lag]), "mixed").iloc[0] if not pd.isna(avg_mean_lag) else "N/A"
+        max_lag_fmt = format_seconds_to_readable(pd.Series([max_lag]), "mixed").iloc[0] if not pd.isna(max_lag) else "N/A"
+
+        email_parts.append(f"* Total DTs Monitored: {total_dt_monitored}")
+        email_parts.append(f"* Currently Refreshing: {executing_refresh_dt_count} tables")
+        email_parts.append(f"* Running (Healthy): {running_dt_count} tables")
+        email_parts.append(f"* Suspended DTs: {suspended_dt_count} {'⚠️' if suspended_dt_count > 0 else '✅'}")
+        email_parts.append(f"* Running (Actively Failing) DTs: {running_but_failed_dt_count} {'⚠️' if running_but_failed_dt_count > 0 else '✅'}")
+        email_parts.append(f"* Avg Mean Lag: {avg_mean_lag_fmt}")
+        email_parts.append(f"* Max Lag: {max_lag_fmt}")
+
+
+    # --- Daily Performance Trends (from DT State tab logic, simplified for email) ---
+    email_parts.append("\n---\n")
+    email_parts.append("**📈 Daily Performance Trends (Last 24 Hours):**")
+
+    # Filter history for last 24 hours for daily digest context
+    last_24h_history_df = history_df[
+        (history_df['DATA_TIMESTAMP_DT'] >= datetime.now() - timedelta(days=1)) &
+        (history_df['REFRESH_ACTION'] != 'NO_DATA') # Exclude NO_DATA for performance metrics
+    ].copy()
+
+    if last_24h_history_df.empty:
+        email_parts.append("No refresh history data in the last 24 hours.")
+    else:
+        total_refreshes_24h = len(last_24h_history_df)
+        succeeded_24h = last_24h_history_df[last_24h_history_df['STATE'] == 'SUCCEEDED']
+        failed_24h = last_24h_history_df[last_24h_history_df['STATE'].isin(['FAILED', 'UPSTREAM_FAILED', 'CANCELLED'])]
+        
+        email_parts.append(f"* Total Refreshes (last 24h): {total_refreshes_24h}")
+        email_parts.append(f"* Succeeded: {len(succeeded_24h)} ({len(succeeded_24h)/total_refreshes_24h:.1%})" if total_refreshes_24h > 0 else "* Succeeded: N/A")
+        email_parts.append(f"* Failed/Cancelled: {len(failed_24h)} ({len(failed_24h)/total_refreshes_24h:.1%}) {'🚨' if len(failed_24h) > 0 else ''}" if total_refreshes_24h > 0 else "* Failed/Cancelled: N/A")
+
+        # Top 3 Failed/Cancelled
+        if not failed_24h.empty:
+            email_parts.append("\n**🚨 Top 3 Recent Failed/Cancelled Refreshes:**")
+            top_failed = failed_24h.sort_values('DATA_TIMESTAMP_DT', ascending=False).head(3)
+            for _, row in top_failed.iterrows():
+                email_parts.append(f"  - `{row['QUALIFIED_NAME']}`: **{row['STATE']}** - {row['STATE_MESSAGE'] if pd.notna(row['STATE_MESSAGE']) else 'No Message'}")
+                email_parts.append(f"    (Ended: {row['REFRESH_END_TIME_DT'].strftime('%Y-%m-%d %H:%M:%S') if pd.notna(row['REFRESH_END_TIME_DT']) else 'N/A'})")
+
+    # --- Links to Dashboard ---
+    email_parts.append("\n---\n")
+    email_parts.append("**🔗 Quick Links:**")
+    email_parts.append(f"* [Full Dashboard Overview]({dashboard_url})")
+    email_parts.append(f"* [View All Failed Refreshes in Dashboard]({dashboard_url}?tab=dt_state_failed)") # Example deep link
+    email_parts.append(f"* [View All Longest Refreshes in Dashboard]({dashboard_url}?tab=dt_state_longest)") # Example deep link
+    email_parts.append("\n---")
+    email_parts.append("*(This is an automated notification. Please do not reply.)*")
+
+    return "\n".join(email_parts)
+
+
+def render_dt_notification_tab(metadata_df: pd.DataFrame, history_df: pd.DataFrame):
+    st.header("Email Notification Settings")
+    st.write("Configure and preview automated email notifications for your Dynamic Tables.")
+
+    st.warning("Note: Email sending from Streamlit Cloud directly requires advanced setup (e.g., using a third-party email API and secrets management). For scheduled emails, consider using Snowflake Tasks/Alerts with Notification Integrations or External Functions.", icon="💡")
+
+    st.markdown("---")
+    st.subheader("Notification Configuration")
+
+    # --- Configuration Inputs ---
+    recipients_input = st.text_input("Recipient Email Addresses (comma-separated):", "your_email@example.com", key="email_recipients")
+    frequency = st.selectbox("Notification Frequency:", ["Daily", "Weekly", "On Critical Alert"], key="email_frequency")
+    
+    # You might expand this with more granular controls:
+    # include_sections = st.multiselect("Include sections in email:", 
+    #                                  ["Current Health Summary", "Tables Exceeding Lag", 
+    #                                   "Daily Performance Trend", "Top Failed Refreshes",
+    #                                   "Top Longest Refreshes", "Frequent Failure Patterns"],
+    #                                  default=["Current Health Summary", "Top Failed Refreshes"])
+
+    st.markdown("---")
+    st.subheader("Email Preview")
+
+    # --- Generate Preview Content ---
+    if st.button("Generate Email Preview", key="generate_preview_button"):
+        with st.spinner("Generating email content..."):
+            try:
+                # Dummy URL for preview
+                preview_dashboard_url = "https://your-streamlit-app-url.streamlit.app" 
+                
+                # Use filtered dataframes if needed for context, but here we summarize broadly
+                # For a real scheduled email, the backend process would do its own filtering/aggregation
+                email_subject = f"Daily DT Monitoring Digest - {datetime.now().strftime('%Y-%m-%d')} [STATUS: OK]"
+                
+                # Determine overall status for subject dynamically (simplified for preview)
+                if not metadata_df.empty and (metadata_df['SCHEDULING_STATE_STATUS'] == 'SUSPENDED').any() or \
+                   (metadata_df['LAST_COMPLETED_REFRESH_STATE'].isin(['FAILED', 'UPSTREAM_FAILED', 'CANCELLED'])).any():
+                    email_subject = email_subject.replace("OK", "WARNING") # Or CRITICAL
+                
+                email_body_markdown = generate_email_content(metadata_df, history_df, preview_dashboard_url)
+                
+                st.write(f"**Subject:** {email_subject}")
+                st.markdown("---")
+                st.markdown(email_body_markdown)
+                st.success("Preview generated successfully!", icon="✅")
+
+            except Exception as e:
+                st.error(f"Error generating preview: {e}", icon="❌")
+                st.exception(e)
+    
+    st.markdown("---")
+    st.subheader("Manual Trigger (for Testing/Ad-hoc Sends)")
+    
+    st.info("This button will only simulate an email send. Actual email sending must be configured via backend services as noted above.", icon="ℹ️")
+
+    if st.button("Send Test Email Now", key="send_test_email_button"):
+        recipients = [r.strip() for r in recipients_input.split(',') if r.strip()]
+        if not recipients:
+            st.warning("Please enter at least one recipient email address.", icon="⚠️")
+        else:
+            try:
+                # --- THIS IS WHERE YOUR BACKEND CALL GOES ---
+                # Example: If you had a Snowflake External Function to send email
+                # session.call('YOUR_EMAIL_EXTERNAL_FUNCTION', subject, body, recipients_list)
+                
+                # For local testing, you might print or simulate a successful send
+                st.success(f"Simulated sending email to: {', '.join(recipients)}", icon="📧")
+                st.markdown("**(Actual email not sent from this Streamlit app directly)**")
+
+            except Exception as e:
+                st.error(f"Error simulating email send: {e}", icon="❌")
+                st.exception(e)
