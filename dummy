@@ -1,141 +1,100 @@
-with chart_cols_pair3[0]: # Refresh Duration Distribution (Histogram) - CORRECTED
-        st.markdown("<p style='font-size:16px;'><b>Refresh Duration Distribution</b></p>", unsafe_allow_html=True)
-        cols_chart_header = st.columns([0.6, 0.2, 0.2]) # Internal columns for title and checkboxes
-        with cols_chart_header[0]:
-            st.write("Distribution of refresh durations.")
-        with cols_chart_header[1]:
-            # No X-axis log scale checkbox here (removed it as per previous request)
-            pass # Keep this column to maintain layout alignment if needed for future
-        with cols_chart_header[2]:
-            use_log_scale_duration_hist_y = st.checkbox("Log Y-axis", key="log_scale_duration_hist_y_dt_state") # Y-axis log scale
-        
-        if 'REFRESH_DURATION_SEC' in filtered_history_df.columns and not filtered_history_df['REFRESH_DURATION_SEC'].empty:
-            # --- APPLY NO_DATA FILTER HERE FOR DURATION ANALYSIS ---
-            duration_data_for_hist_df = filtered_history_df[
-                filtered_history_df['REFRESH_ACTION'] != 'NO_DATA'
-            ].copy()
+with chart_detail_row1_cols[0]: # Mean Lag Distribution (Histogram) - CORRECTED
+        st.markdown("<p style='font-size:16px;'><b>Mean Lag Distribution</b></p>", unsafe_allow_html=True)
+        st.write("Distribution of dynamic tables by their mean lag time.")
 
-            if duration_data_for_hist_df.empty:
-                st.info("No data available for duration distribution after excluding 'NO_DATA' refreshes. Please adjust filters.", icon="ℹ️")
-            else:
-                # --- TRANSFORM X-AXIS DATA TO SELECTED DISPLAY UNIT FOR PLOTTING ---
-                if time_format_option == "minutes":
-                    unit_divisor_hist = 60
-                elif time_format_option == "hours":
-                    unit_divisor_hist = 3600
-                elif time_format_option == "days":
-                    unit_divisor_hist = 86400
-                else: # "seconds" or "mixed" (plot in seconds, so divisor is 1)
-                    unit_divisor_hist = 1
-                
-                duration_data_for_hist_df['X_AXIS_PLOT_VALUE'] = duration_data_for_hist_df['REFRESH_DURATION_SEC'] / unit_divisor_hist
+        # --- DATA PREPARATION FOR MEAN LAG HISTOGRAM ---
+        # Get mean lag data in seconds
+        mean_lag_data_seconds = filtered_metadata_df['MEAN_LAG_SEC'].dropna().copy()
 
-                # Get the Series of data points to plot for the histogram
-                duration_values_to_plot = duration_data_for_hist_df['X_AXIS_PLOT_VALUE'].dropna().copy()
-                
-                # Filter out non-positive values if log scale for Y-axis (Count) is to be applied
-                # Note: No X-axis log scale, so X can have zeros. Y axis log scale applies to Count of bins.
-                # If we filter X, it affects Y's range. It's better to let Plotly handle count.
-                
-                if not duration_values_to_plot.empty:
-                    # --- Define binsize for controlled histogram appearance ---
-                    min_plot_value_hist = duration_values_to_plot.min()
-                    max_plot_value_hist = duration_values_to_plot.max()
+        if not mean_lag_data_seconds.empty:
+            # --- TRANSFORM X-AXIS DATA TO SELECTED DISPLAY UNIT FOR PLOTTING ---
+            if time_format_option == "minutes":
+                unit_divisor_mean_lag = 60
+            elif time_format_option == "hours":
+                unit_divisor_mean_lag = 3600
+            elif time_format_option == "days":
+                unit_divisor_mean_lag = 86400
+            else: # "seconds" or "mixed"
+                unit_divisor_mean_lag = 1
+            
+            mean_lag_values_to_plot = mean_lag_data_seconds / unit_divisor_mean_lag
 
-                    # Handle case where all values are the same or range is extremely small after conversion
-                    if max_plot_value_hist == min_plot_value_hist:
-                        binsize_plot_unit = max(1.0, max_plot_value_hist / 5) # If a single value, try to give it some width
-                        if binsize_plot_unit == 0: binsize_plot_unit = 1.0 # Ensure non-zero bin size
-                    else:
-                        # Determine a sensible binsize in the PLOTTED units
-                        # Aim for approx 20-30 bins for good distribution detail over the range
-                        num_desired_bins = 20
-                        binsize_plot_unit = (max_plot_value_hist - min_plot_value_hist) / num_desired_bins
-                        
-                        # Ensure binsize is not too small for minutes/hours/days if the range is large,
-                        # or at least a minimum sensible unit
-                        if time_format_option == 'minutes':
-                            binsize_plot_unit = max(0.1, binsize_plot_unit) # At least 0.1 min per bin
-                        elif time_format_option == 'hours':
-                            binsize_plot_unit = max(0.01, binsize_plot_unit) # At least 0.01 hour per bin
-                        elif time_format_option == 'days':
-                            binsize_plot_unit = max(0.001, binsize_plot_unit) # At least 0.001 day per bin
-                        else: # seconds or mixed, use a minimum of 1 second per bin if very small
-                            binsize_plot_unit = max(1.0, binsize_plot_unit)
-                        
-                        # Round to nearest sensible number for cleaner bins if it's not tiny
-                        if binsize_plot_unit >= 1:
-                            binsize_plot_unit = round(binsize_plot_unit)
-                        elif binsize_plot_unit >= 0.1:
-                            binsize_plot_unit = round(binsize_plot_unit, 1)
-                        elif binsize_plot_unit >= 0.01:
-                            binsize_plot_unit = round(binsize_plot_unit, 2)
+            # --- DEFINE CUSTOM BINS AND LABELS USING pd.cut ---
+            if not mean_lag_values_to_plot.empty:
+                min_val = mean_lag_values_to_plot.min()
+                max_val = mean_lag_values_to_plot.max()
 
-
-                    # Create bin edges starting from 0 (or a bit before min_plot_value for good measure)
-                    # The `+ binsize_plot_unit` in end ensures the last bin gets created
-                    bins = np.arange(0, max_plot_value_hist + binsize_plot_unit, binsize_plot_unit)
+                # Handle single value or extremely small range
+                if max_val == min_val:
+                    binsize_plot_unit_mean_lag = max(1.0, max_val / 5) # If a single value, try to give it some width
+                    if binsize_plot_unit_mean_lag == 0: binsize_plot_unit_mean_lag = 1.0
+                elif max_val - min_val < 1e-6 and max_val > 0: # Very small non-zero range
+                    binsize_plot_unit_mean_lag = (max_val - min_val) / 2 # Simple half range
+                    if binsize_plot_unit_mean_lag == 0: binsize_plot_unit_mean_lag = 1.0 # Avoid zero bin size
+                else: # Normal range
+                    num_desired_bins = 20
+                    binsize_plot_unit_mean_lag = (max_val - min_val) / num_desired_bins
                     
-                    # Manual override for first bin to ensure 0-start for visualization consistency
-                    if bins[0] != 0:
-                        bins = np.insert(bins, 0, 0)
-                        
-                    # Assign data to bins and get counts
-                    binned_data_series = pd.cut(
-                        duration_values_converted_unit,
-                        bins=bins,
-                        right=False, # [start, end)
-                        include_lowest=True # Include 0 in the first bin
-                    ).astype(str) # Convert to string to avoid Plotly sorting issues
-
-                    # Filter out 'NaN' bins that might appear if data falls outside explicit bins
-                    binned_counts_df = binned_data_series.value_counts().reset_index()
-                    binned_counts_df.columns = ['Bin_Range', 'Count']
+                    if time_format_option == 'minutes':
+                        binsize_plot_unit_mean_lag = max(0.1, binsize_plot_unit_mean_lag)
+                    elif time_format_option == 'hours':
+                        binsize_plot_unit_mean_lag = max(0.01, binsize_plot_unit_mean_lag)
+                    elif time_format_option == 'days':
+                        binsize_plot_unit_mean_lag = max(0.001, binsize_plot_unit_mean_lag)
+                    else: # seconds or mixed
+                        binsize_plot_unit_mean_lag = max(1.0, binsize_plot_unit_mean_lag)
                     
-                    # Ensure Count is positive for log scale, if chosen, apply 1e-9 here too
-                    if use_log_scale_duration_hist_y:
-                        binned_counts_df['Count_Log_Adjusted'] = binned_counts_df['Count'].apply(lambda x: x if x > 0 else 1e-9)
-                        y_axis_to_plot = 'Count_Log_Adjusted'
-                    else:
-                        y_axis_to_plot = 'Count'
+                    if binsize_plot_unit_mean_lag >= 1: # Round if 1 or greater
+                        binsize_plot_unit_mean_lag = round(binsize_plot_unit_mean_lag)
+                    elif binsize_plot_unit_mean_lag >= 0.1: # Round to 1 decimal
+                        binsize_plot_unit_mean_lag = round(binsize_plot_unit_mean_lag, 1)
+                    elif binsize_plot_unit_mean_lag >= 0.01: # Round to 2 decimals
+                        binsize_plot_unit_mean_lag = round(binsize_plot_unit_mean_lag, 2)
+                    elif binsize_plot_unit_mean_lag >= 0.001: # Round to 3 decimals
+                        binsize_plot_unit_mean_lag = round(binsize_plot_unit_mean_lag, 3)
 
-                    # Sort bins properly for visualization
-                    # This requires parsing the bin string (e.g. '[0.0, 10.0)') to get the numerical start
-                    binned_counts_df['Bin_Start_Sort'] = binned_counts_df['Bin_Range'].apply(lambda x: float(x.split(',')[0].replace('[', '')) if pd.notna(x) and '[' in x else -np.inf)
-                    binned_counts_df = binned_counts_df.sort_values('Bin_Start_Sort').drop(columns='Bin_Start_Sort').reset_index(drop=True)
+                # Create bin edges starting from 0
+                bins = np.arange(0, max_val + binsize_plot_unit_mean_lag, binsize_plot_unit_mean_lag)
+                
+                # Assign data to bins and get counts
+                binned_data_series = pd.cut(
+                    mean_lag_values_to_plot,
+                    bins=bins,
+                    right=False, # [start, end)
+                    include_lowest=True # Include 0 in the first bin
+                ).astype(str) # Convert to string for Plotly sorting
 
-                    # --- CREATE PLOTLY EXPRESS BAR CHART (acting as a histogram) ---
-                    fig_duration_hist = px.bar(
-                        binned_counts_df,
-                        x='Bin_Range',
-                        y=y_axis_to_plot, # Plot the actual counts or log-adjusted counts
-                        labels={
-                            'Bin_Range': f'Duration ({time_format_option})', # Dynamic label
-                            'Count': 'Count',
-                            'Count_Log_Adjusted': 'Count (Log Scale)'
-                        },
-                        text_auto=False # No text on bars by default
-                    )
-                    fig_duration_hist.update_layout(bargap=0.1, title_text='') # Remove title
+                # Filter out 'NaN' bins that might appear if data falls outside explicit bins
+                binned_counts_df = binned_data_series.value_counts().reset_index()
+                binned_counts_df.columns = ['Bin_Range', 'Count']
+                
+                # Sort bins properly for visualization
+                binned_counts_df['Bin_Start_Sort'] = binned_counts_df['Bin_Range'].apply(lambda x: float(x.split(',')[0].replace('[', '')) if pd.notna(x) and '[' in x else -np.inf)
+                binned_counts_df = binned_counts_df.sort_values('Bin_Start_Sort').drop(columns='Bin_Start_Sort').reset_index(drop=True)
 
-                    # --- X-axis remains linear with dynamic tick formatting ---
-                    # Update tickangle to 0 to prevent tilt
-                    fig_duration_hist.update_xaxes(
-                        categoryorder='array', # Ensure custom order
-                        categoryarray=binned_counts_df['Bin_Range'].tolist(),
-                        tickangle=0 # Force horizontal labels
-                    )
-                    
-                    # --- Dynamic Y-axis Log Scale (Count) ---
-                    if use_log_scale_duration_hist_y:
-                        fig_duration_hist.update_yaxes(type='log', rangemode='tozero')
-                        st.info("Logarithmic Y-axis applied. Zero counts are handled gracefully.", icon="ℹ️")
-                    else:
-                        fig_duration_hist.update_yaxes(type='linear', title='Count') # Ensure title is reset for linear
-                                
-                    st.plotly_chart(fig_duration_hist, use_container_width=True)
-                else: # duration_values_converted_unit is empty
-                    st.info("No refresh duration data to display for histogram after filtering for positive values.", icon="ℹ️")
-            # This else-block handles if duration_data_for_hist_df was empty initially (after NO_DATA filter)
-            else:
-                st.info("No REFRESH_DURATION_SEC data available after excluding 'NO_DATA' refreshes.", icon="ℹ️")
+                # --- CREATE PLOTLY EXPRESS BAR CHART (acting as a histogram) ---
+                fig_lag_hist = px.bar(
+                    binned_counts_df,
+                    x='Bin_Range',
+                    y='Count',
+                    labels={
+                        'Bin_Range': f'Mean Lag ({time_format_option})',
+                        'Count': 'Number of DTs'
+                    },
+                    text='Count' # Display count on top of bars
+                )
+                fig_lag_hist.update_layout(bargap=0.1)
+
+                # --- X-axis formatting for histogram ---
+                fig_lag_hist.update_xaxes(
+                    categoryorder='array', # Ensure custom order
+                    categoryarray=binned_counts_df['Bin_Range'].tolist(),
+                    tickangle=0 # Force horizontal labels
+                )
+                fig_lag_hist.update_traces(textposition='outside') # Text on top of bars
+                            
+                st.plotly_chart(fig_lag_hist, use_container_width=True)
+            else: # mean_lag_values_to_plot is empty
+                st.info("No mean lag data to display for histogram after unit conversion.", icon="ℹ️")
+        else:
+            st.info("No mean lag data to display for selected filters.", icon="ℹ️")
