@@ -1,125 +1,141 @@
-# Assuming filtered_history_df and time_format_option are already defined in the scope,
-# and format_seconds_to_readable is available.
-
-# --- START OF "Refresh Duration Distribution" Histogram SNIPPET (chart_cols_pair3[0]) ---
-
-with chart_cols_pair3[0]: # Refresh Duration Distribution (Histogram)
-    st.markdown("<p style='font-size:16px;'><b>Refresh Duration Distribution</b></p>", unsafe_allow_html=True)
-    cols_chart_header = st.columns([0.6, 0.2, 0.2]) # Added one more column for Y-axis checkbox
-    with cols_chart_header[0]:
-        st.write("Distribution of refresh durations.")
-    with cols_chart_header[1]:
-        # Removed X-axis log scale checkbox from here as it's being entirely re-done
-        pass # Placeholder to maintain column count if needed
-    with cols_chart_header[2]:
-        use_log_scale_duration_hist_y = st.checkbox("Log Y-axis", key="log_scale_duration_hist_y_dt_state") # Y-axis log scale
+with chart_cols_pair3[0]: # Refresh Duration Distribution (Histogram) - CORRECTED
+        st.markdown("<p style='font-size:16px;'><b>Refresh Duration Distribution</b></p>", unsafe_allow_html=True)
+        cols_chart_header = st.columns([0.6, 0.2, 0.2]) # Internal columns for title and checkboxes
+        with cols_chart_header[0]:
+            st.write("Distribution of refresh durations.")
+        with cols_chart_header[1]:
+            # No X-axis log scale checkbox here (removed it as per previous request)
+            pass # Keep this column to maintain layout alignment if needed for future
+        with cols_chart_header[2]:
+            use_log_scale_duration_hist_y = st.checkbox("Log Y-axis", key="log_scale_duration_hist_y_dt_state") # Y-axis log scale
         
-    if 'REFRESH_DURATION_SEC' in filtered_history_df.columns and not filtered_history_df['REFRESH_DURATION_SEC'].empty:
-        # --- APPLY NO_DATA FILTER HERE FOR DURATION ANALYSIS ---
-        duration_data_for_hist_df = filtered_history_df[
-            filtered_history_df['REFRESH_ACTION'] != 'NO_DATA'
-        ].copy()
+        if 'REFRESH_DURATION_SEC' in filtered_history_df.columns and not filtered_history_df['REFRESH_DURATION_SEC'].empty:
+            # --- APPLY NO_DATA FILTER HERE FOR DURATION ANALYSIS ---
+            duration_data_for_hist_df = filtered_history_df[
+                filtered_history_df['REFRESH_ACTION'] != 'NO_DATA'
+            ].copy()
 
-        if duration_data_for_hist_df.empty:
-            st.info("No data available for duration distribution after excluding 'NO_DATA' refreshes. Please adjust filters.", icon="ℹ️")
-        else:
-            # --- TRANSFORM X-AXIS DATA TO SELECTED DISPLAY UNIT FOR PLOTTING ---
-            if time_format_option == "minutes":
-                unit_divisor_hist = 60
-            elif time_format_option == "hours":
-                unit_divisor_hist = 3600
-            elif time_format_option == "days":
-                unit_divisor_hist = 86400
-            else: # "seconds" or "mixed" (plot in seconds, so divisor is 1)
-                unit_divisor_hist = 1
-            
-            # This is the actual data used for binning (in converted units)
-            duration_values_converted_unit = (duration_data_for_hist_df['REFRESH_DURATION_SEC'] / unit_divisor_hist).dropna().copy()
-            
-            # --- DEFINE CUSTOM BINS AND LABELS USING pd.cut (TO AVOID 'xbins' ERROR) ---
-            if not duration_values_converted_unit.empty:
-                min_val = duration_values_converted_unit.min()
-                max_val = duration_values_converted_unit.max()
-
-                # Determine a sensible binsize based on the range and unit
-                # Aim for approx 20-30 bins for good distribution detail
-                if max_val == min_val: # Handle single value case
-                    binsize_plot_unit = 1 # Smallest reasonable bin
-                elif time_format_option == 'seconds':
-                    binsize_plot_unit = max(1, (max_val - min_val) / 20)
-                elif time_format_option == 'minutes':
-                    binsize_plot_unit = max(0.1, (max_val - min_val) / 20)
-                elif time_format_option == 'hours':
-                    binsize_plot_unit = max(0.01, (max_val - min_val) / 20)
-                elif time_format_option == 'days':
-                    binsize_plot_unit = max(0.001, (max_val - min_val) / 20)
-                else: # mixed, default to seconds style binning
-                    binsize_plot_unit = max(1, (max_val - min_val) / 20)
+            if duration_data_for_hist_df.empty:
+                st.info("No data available for duration distribution after excluding 'NO_DATA' refreshes. Please adjust filters.", icon="ℹ️")
+            else:
+                # --- TRANSFORM X-AXIS DATA TO SELECTED DISPLAY UNIT FOR PLOTTING ---
+                if time_format_option == "minutes":
+                    unit_divisor_hist = 60
+                elif time_format_option == "hours":
+                    unit_divisor_hist = 3600
+                elif time_format_option == "days":
+                    unit_divisor_hist = 86400
+                else: # "seconds" or "mixed" (plot in seconds, so divisor is 1)
+                    unit_divisor_hist = 1
                 
-                # Ensure binsize is not zero if max_val equals min_val
-                if binsize_plot_unit == 0:
-                    binsize_plot_unit = 1.0 # Default if all values are identical (e.g. all 0)
+                duration_data_for_hist_df['X_AXIS_PLOT_VALUE'] = duration_data_for_hist_df['REFRESH_DURATION_SEC'] / unit_divisor_hist
 
-                # Create bin edges starting from 0
-                bins = np.arange(0, max_val + binsize_plot_unit, binsize_plot_unit)
+                # Get the Series of data points to plot for the histogram
+                duration_values_to_plot = duration_data_for_hist_df['X_AXIS_PLOT_VALUE'].dropna().copy()
                 
-                # Assign data to bins and get counts
-                binned_data_series = pd.cut(
-                    duration_values_converted_unit,
-                    bins=bins,
-                    right=False, # [start, end)
-                    include_lowest=True # Include 0 in the first bin
-                ).astype(str) # Convert to string to avoid Plotly sorting issues
-
-                # Filter out 'NaN' bins that might appear if data falls outside explicit bins
-                binned_counts_df = binned_data_series.value_counts().reset_index()
-                binned_counts_df.columns = ['Bin_Range', 'Count']
+                # Filter out non-positive values if log scale for Y-axis (Count) is to be applied
+                # Note: No X-axis log scale, so X can have zeros. Y axis log scale applies to Count of bins.
+                # If we filter X, it affects Y's range. It's better to let Plotly handle count.
                 
-                # Ensure Count is positive for log scale, if chosen, apply 1e-9 here too
-                if use_log_scale_duration_hist_y:
-                    binned_counts_df['Count_Log_Adjusted'] = binned_counts_df['Count'].apply(lambda x: x if x > 0 else 1e-9)
-                    y_axis_to_plot = 'Count_Log_Adjusted'
-                else:
-                    y_axis_to_plot = 'Count'
+                if not duration_values_to_plot.empty:
+                    # --- Define binsize for controlled histogram appearance ---
+                    min_plot_value_hist = duration_values_to_plot.min()
+                    max_plot_value_hist = duration_values_to_plot.max()
 
-                # Sort bins properly for visualization
-                # This requires parsing the bin string (e.g. '[0.0, 10.0)') to get the numerical start
-                binned_counts_df['Bin_Start_Sort'] = binned_counts_df['Bin_Range'].apply(lambda x: float(x.split(',')[0].replace('[', '')))
-                binned_counts_df = binned_counts_df.sort_values('Bin_Start_Sort').drop(columns='Bin_Start_Sort').reset_index(drop=True)
+                    # Handle case where all values are the same or range is extremely small after conversion
+                    if max_plot_value_hist == min_plot_value_hist:
+                        binsize_plot_unit = max(1.0, max_plot_value_hist / 5) # If a single value, try to give it some width
+                        if binsize_plot_unit == 0: binsize_plot_unit = 1.0 # Ensure non-zero bin size
+                    else:
+                        # Determine a sensible binsize in the PLOTTED units
+                        # Aim for approx 20-30 bins for good distribution detail over the range
+                        num_desired_bins = 20
+                        binsize_plot_unit = (max_plot_value_hist - min_plot_value_hist) / num_desired_bins
+                        
+                        # Ensure binsize is not too small for minutes/hours/days if the range is large,
+                        # or at least a minimum sensible unit
+                        if time_format_option == 'minutes':
+                            binsize_plot_unit = max(0.1, binsize_plot_unit) # At least 0.1 min per bin
+                        elif time_format_option == 'hours':
+                            binsize_plot_unit = max(0.01, binsize_plot_unit) # At least 0.01 hour per bin
+                        elif time_format_option == 'days':
+                            binsize_plot_unit = max(0.001, binsize_plot_unit) # At least 0.001 day per bin
+                        else: # seconds or mixed, use a minimum of 1 second per bin if very small
+                            binsize_plot_unit = max(1.0, binsize_plot_unit)
+                        
+                        # Round to nearest sensible number for cleaner bins if it's not tiny
+                        if binsize_plot_unit >= 1:
+                            binsize_plot_unit = round(binsize_plot_unit)
+                        elif binsize_plot_unit >= 0.1:
+                            binsize_plot_unit = round(binsize_plot_unit, 1)
+                        elif binsize_plot_unit >= 0.01:
+                            binsize_plot_unit = round(binsize_plot_unit, 2)
 
-                # --- CREATE PLOTLY EXPRESS BAR CHART (acting as a histogram) ---
-                fig_duration_hist = px.bar(
-                    binned_counts_df,
-                    x='Bin_Range',
-                    y=y_axis_to_plot, # Plot the actual counts or log-adjusted counts
-                    labels={
-                        'Bin_Range': f'Duration ({time_format_option})', # Dynamic label
-                        'Count': 'Count',
-                        'Count_Log_Adjusted': 'Count (Log Scale)'
-                    },
-                    text_auto=False # No text on bars by default
-                )
-                fig_duration_hist.update_layout(bargap=0.1, title_text='')
 
-                # --- X-axis formatting for histogram ---
-                # Since we used pd.cut, the X-axis labels are already bin ranges.
-                # Just ensure they are ordered correctly.
-                fig_duration_hist.update_xaxes(categoryorder='array', categoryarray=binned_counts_df['Bin_Range'].tolist())
+                    # Create bin edges starting from 0 (or a bit before min_plot_value for good measure)
+                    # The `+ binsize_plot_unit` in end ensures the last bin gets created
+                    bins = np.arange(0, max_plot_value_hist + binsize_plot_unit, binsize_plot_unit)
+                    
+                    # Manual override for first bin to ensure 0-start for visualization consistency
+                    if bins[0] != 0:
+                        bins = np.insert(bins, 0, 0)
+                        
+                    # Assign data to bins and get counts
+                    binned_data_series = pd.cut(
+                        duration_values_converted_unit,
+                        bins=bins,
+                        right=False, # [start, end)
+                        include_lowest=True # Include 0 in the first bin
+                    ).astype(str) # Convert to string to avoid Plotly sorting issues
 
+                    # Filter out 'NaN' bins that might appear if data falls outside explicit bins
+                    binned_counts_df = binned_data_series.value_counts().reset_index()
+                    binned_counts_df.columns = ['Bin_Range', 'Count']
+                    
+                    # Ensure Count is positive for log scale, if chosen, apply 1e-9 here too
+                    if use_log_scale_duration_hist_y:
+                        binned_counts_df['Count_Log_Adjusted'] = binned_counts_df['Count'].apply(lambda x: x if x > 0 else 1e-9)
+                        y_axis_to_plot = 'Count_Log_Adjusted'
+                    else:
+                        y_axis_to_plot = 'Count'
 
-                # --- Dynamic Y-axis Log Scale (Count) ---
-                if use_log_scale_duration_hist_y:
-                    # Y-axis type and title already set via y_axis_to_plot logic
-                    fig_duration_hist.update_yaxes(type='log', rangemode='tozero')
-                    st.info("Logarithmic Y-axis applied. Zero counts are handled gracefully.", icon="ℹ️")
-                else:
-                    fig_duration_hist.update_yaxes(type='linear', title='Count') # Ensure title is reset for linear
+                    # Sort bins properly for visualization
+                    # This requires parsing the bin string (e.g. '[0.0, 10.0)') to get the numerical start
+                    binned_counts_df['Bin_Start_Sort'] = binned_counts_df['Bin_Range'].apply(lambda x: float(x.split(',')[0].replace('[', '')) if pd.notna(x) and '[' in x else -np.inf)
+                    binned_counts_df = binned_counts_df.sort_values('Bin_Start_Sort').drop(columns='Bin_Start_Sort').reset_index(drop=True)
+
+                    # --- CREATE PLOTLY EXPRESS BAR CHART (acting as a histogram) ---
+                    fig_duration_hist = px.bar(
+                        binned_counts_df,
+                        x='Bin_Range',
+                        y=y_axis_to_plot, # Plot the actual counts or log-adjusted counts
+                        labels={
+                            'Bin_Range': f'Duration ({time_format_option})', # Dynamic label
+                            'Count': 'Count',
+                            'Count_Log_Adjusted': 'Count (Log Scale)'
+                        },
+                        text_auto=False # No text on bars by default
+                    )
+                    fig_duration_hist.update_layout(bargap=0.1, title_text='') # Remove title
+
+                    # --- X-axis remains linear with dynamic tick formatting ---
+                    # Update tickangle to 0 to prevent tilt
+                    fig_duration_hist.update_xaxes(
+                        categoryorder='array', # Ensure custom order
+                        categoryarray=binned_counts_df['Bin_Range'].tolist(),
+                        tickangle=0 # Force horizontal labels
+                    )
+                    
+                    # --- Dynamic Y-axis Log Scale (Count) ---
+                    if use_log_scale_duration_hist_y:
+                        fig_duration_hist.update_yaxes(type='log', rangemode='tozero')
+                        st.info("Logarithmic Y-axis applied. Zero counts are handled gracefully.", icon="ℹ️")
+                    else:
+                        fig_duration_hist.update_yaxes(type='linear', title='Count') # Ensure title is reset for linear
                                 
-                st.plotly_chart(fig_duration_hist, use_container_width=True)
-            else: # duration_values_converted_unit is empty
-                st.info("No refresh duration data to display for histogram.", icon="ℹ️")
-        # This else-block handles if duration_data_for_hist_df was empty initially (after NO_DATA filter)
-        else:
-            st.info("No REFRESH_DURATION_SEC data available after excluding 'NO_DATA' refreshes.", icon="ℹ️")
-
-# --- END OF "Refresh Duration Distribution" Histogram SNIPPET ---
+                    st.plotly_chart(fig_duration_hist, use_container_width=True)
+                else: # duration_values_converted_unit is empty
+                    st.info("No refresh duration data to display for histogram after filtering for positive values.", icon="ℹ️")
+            # This else-block handles if duration_data_for_hist_df was empty initially (after NO_DATA filter)
+            else:
+                st.info("No REFRESH_DURATION_SEC data available after excluding 'NO_DATA' refreshes.", icon="ℹ️")
