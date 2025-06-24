@@ -1,0 +1,158 @@
+CREATE OR REPLACE PROCEDURE YOUR_DB.YOUR_SCHEMA.SP_DRIVE_ALL_DT_COLLECTION()
+RETURNS VARCHAR
+LANGUAGE SQL
+EXECUTE AS CALLER
+AS
+$$
+DECLARE
+    -- --- Configuration Variables ---
+    LV_TRACKING_TABLE_FQDN VARCHAR := 'YOUR_DB.YOUR_SCHEMA.T_DYNAMIC_TABLE_TRACKING';
+    LV_REFRESH_HISTORY_PROC_FQDN VARCHAR := 'YOUR_DB.YOUR_SCHEMA.SP_COLLECT_DT_REFRESH_HISTORY';
+    LV_METADATA_PROC_FQDN VARCHAR := 'YOUR_DB.YOUR_SCHEMA.SP_COLLECT_DYNAMIC_TABLE_METADATA';
+    
+    -- --- Internal Variables ---
+    lv_message VARCHAR DEFAULT '';
+    lv_record_count INTEGER DEFAULT 0;
+    lv_success_count INTEGER DEFAULT 0;
+    lv_fail_count INTEGER DEFAULT 0;
+    lv_db_name VARCHAR;
+    lv_schema_name VARCHAR;
+    lv_table_name VARCHAR;
+    lv_qualified_name VARCHAR;
+    lv_track_refresh_history BOOLEAN;
+    lv_track_metadata_snapshot BOOLEEN;
+    lv_refresh_history_days NUMBER;
+    lv_metadata_days NUMBER;
+    lv_call_result VARCHAR;
+    lv_sub_proc_query_id VARCHAR;
+    lv_error_message VARCHAR;
+
+    -- --- NEW: Temporary table to store ASYNC query IDs for polling ---
+    -- This table will store info for each ASYNC call made
+    c_tables CURSOR FOR
+        SELECT 
+            DATABASE_NAME, SCHEMA_NAME, TABLE_NAME, QUALIFIED_NAME,
+            TRACK_REFRESH_HISTORY, TRACK_METADATA_SNAPSHOT, TRACK_GRAPH_HISTORY,
+            COLLECT_REFRESH_HISTORY_DAYS, COLLECT_METADATA_DAYS
+        FROM IDENTIFIER(:LV_TRACKING_TABLE_FQDN)
+        WHERE IS_ACTIVE = TRUE;
+
+BEGIN
+    lv_message := lv_message || 'Starting DYNAMIC TABLE COLLECTION DRIVER at ' || CURRENT_TIMESTAMP() || '\n';
+    
+    -- Create temporary table to log async jobs
+    CREATE OR REPLACE TEMPORARY TABLE ASYNC_JOB_LOG (
+        QUALIFIED_NAME VARCHAR,
+        JOB_TYPE VARCHAR, -- 'REFRESH_HISTORY' or 'METADATA_SNAPSHOT'
+        QUERY_ID VARCHAR,
+        SUBMISSION_TIME TIMESTAMP_LTZ,
+        STATUS VARCHAR DEFAULT 'SUBMITTED', -- 'SUBMITTED', 'SUCCEEDED', 'FAILED', 'CANCELLED'
+        MESSAGE VARCHAR,
+        LAST_UPDATE_TIME TIMESTAMP_LTZ
+    );
+
+    -- --- Step 1: Launch all ASYNC jobs ---
+    FOR record_row IN c_tables DO
+        lv_record_count := lv_record_count + 1;
+
+        lv_db_name := record_row.DATABASE_NAME;
+        lv_schema_name := record_row.SCHEMA_NAME;
+        lv_table_name := record_row.TABLE_NAME;
+        lv_qualified_name := record_row.QUALIFIED_NAME;
+        lv_track_refresh_history := record_row.TRACK_REFRESH_HISTORY;
+        lv_track_metadata_snapshot := record_row.TRACK_METADATA_SNAPSHOT;
+        lv_refresh_history_days := record_row.COLLECT_REFRESH_HISTORY_DAYS;
+        lv_metadata_days := record_row.COLLECT_METADATA_DAYS;
+
+        BEGIN -- Inner BEGIN/END block for per-table submission error handling
+            -- Call SP_COLLECT_DT_REFRESH_HISTORY ASYNC
+            IF (lv_track_refresh_history) THEN
+                EXECUTE IMMEDIATE 'CALL ' || :LV_REFRESH_HISTORY_PROC_FQDN || '(?, ?, ?, ?) ASYNC'
+                USING lv_db_name, lv_schema_name, lv_table_name, lv_refresh_history_days;
+                
+                lv_sub_proc_query_id := LAST_QUERY_ID();
+                INSERT INTO ASYNC_JOB_LOG (QUALIFIED_NAME, JOB_TYPE, QUERY_ID, SUBMISSION_TIME, MESSAGE, LAST_UPDATE_TIME)
+                VALUES (:lv_qualified_name, 'REFRESH_HISTORY', :lv_sub_proc_query_id, CURRENT_TIMESTAMP(), 'Job submitted ASYNC', CURRENT_TIMESTAMP());
+                lv_message := lv_message || '  Submitted Refresh History for ' || lv_qualified_name || ' (Query ID: ' || lv_sub_proc_query_id || ')\n';
+            END IF;
+
+            -- Call SP_COLLECT_DYNAMIC_TABLE_METADATA ASYNC
+            IF (lv_track_metadata_snapshot) THEN
+                EXECUTE IMMEDIATE 'CALL ' || :LV_METADATA_PROC_FQDN || '(?, ?, ?) ASYNC'
+                USING lv_db_name, lv_schema_name, lv_table_name;
+
+                lv_sub_proc_query_id := LAST_QUERY_ID();
+                INSERT INTO ASYNC_JOB_LOG (QUALIFIED_NAME, JOB_TYPE, QUERY_ID, SUBMISSION_TIME, MESSAGE, LAST_UPDATE_TIME)
+                VALUES (:lv_qualified_name, 'METADATA_SNAPSHOT', :lv_sub_proc_query_id, CURRENT_TIMESTAMP(), 'Job submitted ASYNC', CURRENT_TIMESTAMP());
+                lv_message := lv_message || '  Submitted Metadata Snapshot for ' || lv_qualified_name || ' (Query ID: ' || lv_sub_proc_query_id || ')\n';
+            END IF;
+
+        EXCEPTION
+            WHEN OTHER THEN
+                lv_error_message := 'ERROR submitting ASYNC job for ' || lv_qualified_name || ': ' || SQLERRM();
+                lv_message := lv_message || '    ' || lv_error_message || '\n';
+                -- Log the submission error, but don't add to fail_count yet as actual execution hasn't happened.
+        END; -- End inner BEGIN/END block for submission
+    END FOR; -- End of FOR loop for cursor iteration
+
+    lv_message := lv_message || 'All ASYNC jobs submitted. Waiting for completion...\n';
+
+    -- --- Step 2: Poll and wait for all submitted ASYNC jobs to complete ---
+    -- Max wait time for all jobs (e.g., 2 hours). Adjust based on expected max duration.
+    -- Consider using a loop with SYSTEM$WAIT_FOR_JOB_BY_IDS if available (requires specific Snowflake client versions)
+    -- For simplicity, we'll iterate through logged jobs and wait for each.
+
+    FOR job_row IN (SELECT QUALIFIED_NAME, JOB_TYPE, QUERY_ID FROM ASYNC_JOB_LOG WHERE STATUS = 'SUBMITTED') DO
+        BEGIN
+            CALL SYSTEM$WAIT_FOR_JOB(job_row.QUERY_ID, 7200); -- Wait up to 2 hours (7200 seconds) for each job
+            
+            -- Query history to get final status and result
+            SELECT 
+                query_tag, -- This is where the proc's return value (RESULT) would appear for success
+                error_message
+            INTO lv_call_result, lv_error_message
+            FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY())
+            WHERE query_id = job_row.QUERY_ID;
+            
+            -- Check if successful, failed, or cancelled
+            IF (lv_error_message IS NULL) THEN
+                UPDATE ASYNC_JOB_LOG 
+                SET STATUS = 'SUCCEEDED', MESSAGE = :lv_call_result, LAST_UPDATE_TIME = CURRENT_TIMESTAMP()
+                WHERE QUERY_ID = job_row.QUERY_ID;
+                lv_success_count := lv_success_count + 1;
+            ELSE
+                UPDATE ASYNC_JOB_LOG 
+                SET STATUS = 'FAILED', MESSAGE = :lv_error_message, LAST_UPDATE_TIME = CURRENT_TIMESTAMP()
+                WHERE QUERY_ID = job_row.QUERY_ID;
+                lv_fail_count := lv_fail_count + 1;
+            END IF;
+
+        EXCEPTION
+            WHEN OTHER THEN
+                lv_error_message := 'Polling/Waiting ERROR for ' || job_row.QUALIFIED_NAME || ' ' || job_row.JOB_TYPE || ' (Query ID: ' || job_row.QUERY_ID || '): ' || SQLERRM();
+                lv_message := lv_message || '    ' || lv_error_message || '\n';
+                UPDATE ASYNC_JOB_LOG 
+                SET STATUS = 'FAILED_POLLING', MESSAGE = :lv_error_message, LAST_UPDATE_TIME = CURRENT_TIMESTAMP()
+                WHERE QUERY_ID = job_row.QUERY_ID;
+                lv_fail_count := lv_fail_count + 1;
+        END;
+    END FOR; -- End of polling loop
+
+    -- --- Step 3: Final Summary and Return ---
+    lv_message := lv_message || 'DYNAMIC TABLE COLLECTION DRIVER finished at ' || CURRENT_TIMESTAMP() || '\n';
+    lv_message := lv_message || 'Total tables found: ' || lv_record_count || ', Jobs Submitted: ' || lv_success_count + lv_fail_count || ', Jobs Overall Success: ' || lv_success_count || ', Jobs Overall Failed: ' || lv_fail_count || '\n';
+    
+    -- Add summary of job results from ASYNC_JOB_LOG
+    lv_message := lv_message || '\n--- ASYNC Job Results ---\n';
+    FOR result_row IN (SELECT QUALIFIED_NAME, JOB_TYPE, STATUS, MESSAGE FROM ASYNC_JOB_LOG ORDER BY QUALIFIED_NAME, JOB_TYPE) DO
+        lv_message := lv_message || job_row.QUALIFIED_NAME || ' - ' || job_row.JOB_TYPE || ': ' || job_row.STATUS || ' (' || job_row.MESSAGE || ')\n';
+    END FOR;
+
+    RETURN lv_message;
+
+EXCEPTION
+    WHEN OTHER THEN
+        lv_error_message := 'Major Error in DYNAMIC TABLE COLLECTION DRIVER: ' || SQLERRM();
+        RETURN lv_error_message;
+END;
+$$;
