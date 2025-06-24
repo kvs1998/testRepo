@@ -1,7 +1,3 @@
--- Main Driver Stored Procedure - Orchestrates collection for all tracked tables
--- UPDATED to use ASYNC calls for sub-procedures and retrieve results via QUERY_HISTORY.RETURN_VALUE
--- Replace YOUR_DB and YOUR_SCHEMA.
-
 CREATE OR REPLACE PROCEDURE YOUR_DB.YOUR_SCHEMA.SP_DRIVE_ALL_DT_COLLECTION()
 RETURNS VARCHAR
 LANGUAGE SQL
@@ -29,7 +25,7 @@ DECLARE
     lv_track_graph_history BOOLEAN; -- Not implemented yet, but included in schema
     lv_refresh_history_days NUMBER;
     lv_metadata_days NUMBER;
-    lv_sub_proc_query_id VARCHAR;
+    lv_sub_proc_query_id VARCHAR; -- To store the QUERY_ID of ASYNC calls
     lv_proc_execution_status VARCHAR; -- Status from QUERY_HISTORY
     lv_proc_return_value VARCHAR;     -- Actual RETURN value from the sub-procedure
     lv_proc_error_message VARCHAR;    -- Error message from QUERY_HISTORY if failed
@@ -56,16 +52,19 @@ BEGIN
     );
 
     -- --- Step 1: Launch all ASYNC jobs ---
-    OPEN c_tables;
-    LOOP
-        FETCH c_tables INTO lv_db_name, lv_schema_name, lv_table_name, lv_qualified_name,
-                             lv_track_refresh_history, lv_track_metadata_snapshot, lv_track_graph_history,
-                             lv_refresh_history_days, lv_metadata_days;
-        IF (c_tables%NOTFOUND) THEN
-            BREAK; -- Exit loop when no more records
-        END IF;
-
+    -- CORRECTED: Use FOR loop for cursor iteration in Snowflake Scripting
+    FOR record_row IN c_tables DO -- Directly iterates over the cursor
         lv_total_tables_found := lv_total_tables_found + 1;
+
+        lv_db_name := record_row.DATABASE_NAME;
+        lv_schema_name := record_row.SCHEMA_NAME;
+        lv_table_name := record_row.TABLE_NAME;
+        lv_qualified_name := record_row.QUALIFIED_NAME;
+        lv_track_refresh_history := record_row.TRACK_REFRESH_HISTORY;
+        lv_track_metadata_snapshot := record_row.TRACK_METADATA_SNAPSHOT;
+        lv_track_graph_history := record_row.TRACK_GRAPH_HISTORY;
+        lv_refresh_history_days := record_row.COLLECT_REFRESH_HISTORY_DAYS;
+        lv_metadata_days := record_row.COLLECT_METADATA_DAYS;
 
         BEGIN -- Inner BEGIN/END block for per-table ASYNC job submission error handling
             
@@ -97,23 +96,24 @@ BEGIN
             WHEN OTHER THEN
                 lv_loop_error_message := 'ERROR submitting ASYNC job(s) for ' || lv_qualified_name || ': ' || SQLERRM();
                 lv_message := lv_message || '    ' || lv_loop_error_message || '\n';
-                -- Optionally log this submission failure into T_DYNAMIC_TABLE_TRACKING immediately if an async call couldn't even be submitted
+                -- If submission fails, log it as an immediate failure.
+                -- Note: This is a submission failure, not an execution failure.
+                INSERT INTO ASYNC_JOB_QUEUE (QUALIFIED_NAME, JOB_TYPE, QUERY_ID, SUBMISSION_TIME, STATUS, MESSAGE, LAST_UPDATE_TIME)
+                VALUES (:lv_qualified_name, 'SUBMISSION_FAILED_UNKNOWN_TYPE', 'N/A_SUB_ERROR', CURRENT_TIMESTAMP(), 'FAILED_SUBMISSION', :lv_loop_error_message, CURRENT_TIMESTAMP());
+                -- No increment of lv_overall_fail_count here, as this is for job execution, not submission.
         END; -- End inner BEGIN/END block for submission
-    END LOOP;
-    CLOSE c_tables;
+    END FOR; -- End of FOR loop for cursor iteration
 
     lv_message := lv_message || 'All ASYNC jobs submitted (' || lv_jobs_submitted_count || ' jobs). Waiting for completion...\n';
 
-    -- --- Step 2: Poll and wait for all submitted ASYNC jobs to complete and process results ---
-    -- Cursor to iterate through all submitted jobs for polling
+    -- --- Step 2: Poll and wait for all submitted ASYNC jobs to complete ---
+    -- Iterate only through jobs that were successfully submitted for polling
     FOR job_row IN (SELECT QUALIFIED_NAME, JOB_TYPE, QUERY_ID FROM ASYNC_JOB_QUEUE) DO
         BEGIN
             -- Wait for the specific ASYNC job to complete
-            -- Timeout (e.g., 2 hours = 7200 seconds). Adjust based on expected max duration of sub-procedures.
-            CALL SYSTEM$WAIT_FOR_JOB(job_row.QUERY_ID, 7200); 
+            CALL SYSTEM$WAIT_FOR_JOB(job_row.QUERY_ID, 7200); -- Wait up to 2 hours (7200 seconds)
             
-            -- Query INFORMATION_SCHEMA.QUERY_HISTORY to get final execution status and the RETURN_VALUE
-            -- The RETURN_VALUE column (when applicable for stored procedures) contains the string result.
+            -- Query history to get final execution status and the RETURN_VALUE
             SELECT 
                 qh.EXECUTION_STATUS, 
                 qh.RETURN_VALUE::VARCHAR, -- Safely cast RETURN_VALUE to VARCHAR
@@ -131,7 +131,6 @@ BEGIN
                 UPDATE ASYNC_JOB_QUEUE 
                 SET STATUS = 'SUCCEEDED', MESSAGE = :lv_proc_return_value, LAST_UPDATE_TIME = CURRENT_TIMESTAMP()
                 WHERE QUERY_ID = job_row.QUERY_ID;
-                lv_overall_success_count := lv_overall_success_count + 1;
                 
                 -- --- Update T_DYNAMIC_TABLE_TRACKING based on success ---
                 IF (job_row.JOB_TYPE = 'REFRESH_HISTORY') THEN
@@ -159,7 +158,6 @@ BEGIN
                 UPDATE ASYNC_JOB_QUEUE 
                 SET STATUS = :lv_proc_execution_status, MESSAGE = :lv_proc_error_message, LAST_UPDATE_TIME = CURRENT_TIMESTAMP()
                 WHERE QUERY_ID = job_row.QUERY_ID;
-                lv_overall_fail_count := lv_overall_fail_count + 1;
 
                 -- --- Update T_DYNAMIC_TABLE_TRACKING based on failure ---
                  IF (job_row.JOB_TYPE = 'REFRESH_HISTORY') THEN
@@ -188,9 +186,6 @@ BEGIN
                 UPDATE ASYNC_JOB_QUEUE 
                 SET STATUS = 'FAILED_POLLING', MESSAGE = :lv_loop_error_message, LAST_UPDATE_TIME = CURRENT_TIMESTAMP()
                 WHERE QUERY_ID = job_row.QUERY_ID;
-                -- The lv_overall_fail_count was already incremented if it was a failure, but incrementing here
-                -- implies a failure in the polling process itself, not necessarily the job's execution.
-                -- It's important to differentiate in logs.
         END;
     END FOR; -- End of polling loop
 
@@ -198,11 +193,11 @@ BEGIN
     lv_message := lv_message || 'DYNAMIC TABLE COLLECTION DRIVER finished at ' || CURRENT_TIMESTAMP() || '\n';
     
     -- Recalculate processed/success/fail counts from ASYNC_JOB_QUEUE to be fully accurate
-    -- in case of polling failures or other inconsistencies.
-    SELECT COUNT(*) INTO lv_jobs_submitted_count FROM ASYNC_JOB_QUEUE; -- Total attempts to run a job
+    -- This ensures any 'FAILED_SUBMISSION' or 'FAILED_POLLING' are included in total failed counts.
+    SELECT COUNT(*) INTO lv_jobs_submitted_count FROM ASYNC_JOB_QUEUE; -- Total attempts to run a job from queue
     SELECT COUNT(*) INTO lv_overall_success_count FROM ASYNC_JOB_QUEUE WHERE STATUS = 'SUCCEEDED';
     SELECT COUNT(*) INTO lv_overall_fail_count FROM ASYNC_JOB_QUEUE WHERE STATUS NOT LIKE 'SUCCEEDED'; -- Any status other than succeeded
-
+    
     lv_message := lv_message || 'Total tables in tracking: ' || lv_total_tables_found || '\n';
     lv_message := lv_message || 'Total ASYNC Jobs attempted: ' || lv_jobs_submitted_count || '\n';
     lv_message := lv_message || 'Jobs Overall Success: ' || lv_overall_success_count || '\n';
