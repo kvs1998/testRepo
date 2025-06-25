@@ -1,164 +1,134 @@
--- CREATE STORED PROCEDURE STATEMENT - Collects DYNAMIC_TABLE_REFRESH_HISTORY
--- UPDATED to perform its OWN update to T_DYNAMIC_TABLE_TRACKING
--- Replace YOUR_DB and YOUR_SCHEMA.
-
-CREATE OR REPLACE PROCEDURE YOUR_DB.YOUR_SCHEMA.SP_COLLECT_DT_REFRESH_HISTORY(
-    P_DATABASE_NAME VARCHAR,
-    P_SCHEMA_NAME VARCHAR,
-    P_TABLE_NAME VARCHAR,
-    P_COLLECT_FROM_LAST_DAYS NUMBER
-)
+CREATE OR REPLACE PROCEDURE YOUR_DB.YOUR_SCHEMA.SP_DRIVE_ALL_DT_COLLECTION()
 RETURNS VARCHAR
 LANGUAGE SQL
 EXECUTE AS CALLER
 AS
 $$
 DECLARE
-    lv_func_args VARCHAR := '';
-    lv_merge_action_desc VARCHAR;
-    lv_error_message VARCHAR;
-    lv_records_fetched INTEGER;
-    lv_filter_provided BOOLEAN := FALSE;
-    lv_qualified_name_to_filter VARCHAR;
-    lv_proc_return_message VARCHAR;
+    -- --- Configuration Variables ---
+    LV_TRACKING_TABLE_FQDN VARCHAR := 'YOUR_DB.YOUR_SCHEMA.T_DYNAMIC_TABLE_TRACKING';
+    LV_REFRESH_HISTORY_PROC_FQDN VARCHAR := 'YOUR_DB.YOUR_SCHEMA.SP_COLLECT_DT_REFRESH_HISTORY';
+    LV_METADATA_PROC_FQDN VARCHAR := 'YOUR_DB.YOUR_SCHEMA.SP_COLLECT_DYNAMIC_TABLE_METADATA';
+    -- LV_GRAPH_HISTORY_PROC_FQDN VARCHAR := 'YOUR_DB.YOUR_SCHEMA.SP_COLLECT_DT_GRAPH_HISTORY'; -- Placeholder
     
-    -- Configuration for tracking table
-    LV_TRACKING_TABLE_FQDN VARCHAR := 'YOUR_DB.YOUR_SCHEMA.T_DYNAMIC_TABLE_TRACKING'; -- Must be defined here
+    -- --- Internal Variables ---
+    lv_message VARCHAR DEFAULT '';
+    lv_total_tables_found INTEGER DEFAULT 0;
+    lv_jobs_launched_count INTEGER DEFAULT 0;
+    lv_current_table_qualified_name VARCHAR; 
+    lv_refresh_history_days NUMBER;
+    lv_metadata_days NUMBER;
+    lv_loop_error_message VARCHAR; -- For errors during ASYNC job SUBMISSION
+    lv_error_message_overall VARCHAR; -- For major errors outside loop
+
+    -- Cursor to select active tables needing collection
+    c_tables CURSOR FOR
+        SELECT 
+            DATABASE_NAME, SCHEMA_NAME, TABLE_NAME, QUALIFIED_NAME,
+            TRACK_REFRESH_HISTORY, TRACK_METADATA_SNAPSHOT, TRACK_GRAPH_HISTORY,
+            COLLECT_REFRESH_HISTORY_DAYS, COLLECT_METADATA_DAYS
+        FROM IDENTIFIER(:LV_TRACKING_TABLE_FQDN)
+        WHERE IS_ACTIVE = TRUE;
+
 BEGIN
-    -- Initialize status as IN_PROGRESS before starting main logic
-    lv_qualified_name_to_filter := :P_DATABASE_NAME || '.' || :P_SCHEMA_NAME || '.' || :P_TABLE_NAME;
-    UPDATE IDENTIFIER(:LV_TRACKING_TABLE_FQDN)
-    SET 
-        LAST_REFRESH_HISTORY_COLLECTION_TIMESTAMP = CURRENT_TIMESTAMP()::TIMESTAMP_NTZ,
-        LAST_REFRESH_HISTORY_COLLECTION_STATUS = 'IN_PROGRESS',
-        LAST_REFRESH_HISTORY_COLLECTION_MESSAGE = 'Collection started.',
-        UPDATED_AT = CURRENT_TIMESTAMP()::TIMESTAMP_NTZ
-    WHERE QUALIFIED_NAME = :lv_qualified_name_to_filter;
-
-    -- Strict Input Validation
-    IF (P_DATABASE_NAME IS NOT NULL AND TRIM(P_DATABASE_NAME) != '' AND
-        P_SCHEMA_NAME IS NOT NULL AND TRIM(P_SCHEMA_NAME) != '' AND
-        P_TABLE_NAME IS NOT NULL AND TRIM(P_TABLE_NAME) != '' AND
-        P_COLLECT_FROM_LAST_DAYS > 0) THEN
-        
-        lv_func_args := 'NAME => ''' || :P_DATABASE_NAME || '.' || :P_SCHEMA_NAME || '.' || :P_TABLE_NAME || 
-                        ''', END_TIME_RANGE_START => DATEADD(day, -' || :P_COLLECT_FROM_LAST_DAYS || ', CURRENT_TIMESTAMP())';
-        lv_filter_provided := TRUE;
-        
-    ELSE
-        lv_proc_return_message := 'ERROR: P_DATABASE_NAME, P_SCHEMA_NAME, P_TABLE_NAME must be provided and non-empty, and P_COLLECT_FROM_LAST_DAYS must be > 0.';
-        -- Update tracking table with FAILED status
-        UPDATE IDENTIFIER(:LV_TRACKING_TABLE_FQDN)
-        SET 
-            LAST_REFRESH_HISTORY_COLLECTION_TIMESTAMP = CURRENT_TIMESTAMP()::TIMESTAMP_NTZ,
-            LAST_REFRESH_HISTORY_COLLECTION_STATUS = 'FAILED_INPUT',
-            LAST_REFRESH_HISTORY_COLLECTION_MESSAGE = :lv_proc_return_message,
-            UPDATED_AT = CURRENT_TIMESTAMP()::TIMESTAMP_NTZ
-        WHERE QUALIFIED_NAME = :lv_qualified_name_to_filter;
-        RETURN lv_proc_return_message;
-    END IF;
-
-    -- Merge into the flat history table (T_DYNAMIC_TABLE_REFRESH_HISTORY_FLAT)
-    EXECUTE IMMEDIATE '
-        MERGE INTO YOUR_DB.YOUR_SCHEMA.T_DYNAMIC_TABLE_REFRESH_HISTORY_FLAT AS target_table
-        USING (
-            SELECT
-                drh.DATABASE_NAME,
-                drh.SCHEMA_NAME,
-                drh.TABLE_NAME,
-                drh.QUALIFIED_NAME,
-                drh.STATE,
-                drh.STATE_CODE,
-                drh.STATE_MESSAGE,
-                drh.QUERY_ID,
-                drh.DATA_TIMESTAMP,
-                drh.REFRESH_START_TIME,
-                drh.REFRESH_END_TIME,
-                drh.COMPLETION_TARGET,
-                drh.LAST_COMPLETED_DEPENDENCY, -- This is an OBJECT type, might need flattening if not already
-                -- Extract properties from LAST_COMPLETED_DEPENDENCY OBJECT
-                drh.LAST_COMPLETED_DEPENDENCY:QUALIFIED_NAME::TEXT AS LAST_COMPLETED_DEPENDENCY_QUALIFIED_NAME,
-                drh.LAST_COMPLETED_DEPENDENCY:DATA_TIMESTAMP::TIMESTAMP_LTZ AS LAST_COMPLETED_DEPENDENCY_DATA_TIMESTAMP,
-                -- Extract properties from STATISTICS OBJECT
-                drh.STATISTICS:NUMINSERTEDROWS::NUMBER AS NUMINSERTEDROWS,
-                drh.STATISTICS:NUMDELETEDROWS::NUMBER AS NUMDELETEDROWS,
-                drh.STATISTICS:NUMCOPIEDROWS::NUMBER AS NUMCOPIEDROWS,
-                drh.STATISTICS:NUMADDEDPARTITIONS::NUMBER AS NUMADDEDPARTITIONS,
-                drh.STATISTICS:NUMREMOVEDPARTITIONS::NUMBER AS NUMREMOVEDPARTITIONS,
-                drh.REFRESH_ACTION,
-                drh.REFRESH_TRIGGER,
-                drh.TARGET_LAG_SEC,
-                drh.GRAPH_HISTORY_VALID_FROM
-            FROM
-                TABLE(INFORMATION_SCHEMA.DYNAMIC_TABLE_REFRESH_HISTORY(' || lv_func_args || ')) drh
-            WHERE drh.QUALIFIED_NAME = ''' || :lv_qualified_name_to_filter || ''' -- Strict filter post-function call
-        ) AS source_data
-        ON target_table.QUALIFIED_NAME = source_data.QUALIFIED_NAME
-        AND target_table.QUERY_ID = source_data.QUERY_ID -- QUERY_ID as part of merge key to identify unique refreshes
-
-        WHEN MATCHED THEN -- Update existing refresh records if they somehow changed (e.g., pending -> completed)
-            UPDATE SET
-                target_table.STATE = source_data.STATE,
-                target_table.STATE_CODE = source_data.STATE_CODE,
-                target_table.STATE_MESSAGE = source_data.STATE_MESSAGE,
-                target_table.REFRESH_END_TIME = source_data.REFRESH_END_TIME,
-                target_table.NUMINSERTEDROWS = source_data.NUMINSERTEDROWS,
-                target_table.NUMDELETEDROWS = source_data.NUMDELETEDROWS,
-                target_table.NUMCOPIEDROWS = source_data.NUMCOPIEDROWS,
-                target_table.NUMADDEDPARTITIONS = source_data.NUMADDEDPARTITIONS,
-                target_table.NUMREMOVEDPARTITIONS = source_data.NUMREMOVEDPARTITIONS,
-                target_table.REFRESH_ACTION = source_data.REFRESH_ACTION,
-                target_table.REFRESH_TRIGGER = source_data.REFRESH_TRIGGER
-        WHEN NOT MATCHED THEN
-            INSERT (
-                DATABASE_NAME, SCHEMA_NAME, TABLE_NAME, QUALIFIED_NAME,
-                STATE, STATE_CODE, STATE_MESSAGE, QUERY_ID, DATA_TIMESTAMP,
-                REFRESH_START_TIME, REFRESH_END_TIME, COMPLETION_TARGET,
-                LAST_COMPLETED_DEPENDENCY_QUALIFIED_NAME, LAST_COMPLETED_DEPENDENCY_DATA_TIMESTAMP,
-                NUMINSERTEDROWS, NUMDELETEDROWS, NUMCOPIEDROWS, NUMADDEDPARTITIONS, NUMREMOVEDPARTITIONS,
-                REFRESH_ACTION, REFRESH_TRIGGER, TARGET_LAG_SEC, GRAPH_HISTORY_VALID_FROM
-            )
-            VALUES (
-                source_data.DATABASE_NAME, source_data.SCHEMA_NAME, source_data.TABLE_NAME, source_data.QUALIFIED_NAME,
-                source_data.STATE, source_data.STATE_CODE, source_data.STATE_MESSAGE, source_data.QUERY_ID, source_data.DATA_TIMESTAMP,
-                source_data.REFRESH_START_TIME, source_data.REFRESH_END_TIME, source_data.COMPLETION_TARGET,
-                source_data.LAST_COMPLETED_DEPENDENCY_QUALIFIED_NAME, source_data.LAST_COMPLETED_DEPENDENCY_DATA_TIMESTAMP,
-                source_data.NUMINSERTEDROWS, source_data.NUMDELETEDROWS, source_data.NUMCOPIEDROWS, source_data.NUMADDEDPARTITIONS, source_data.NUMREMOVEDPARTITIONS,
-                source_data.REFRESH_ACTION, source_data.REFRESH_TRIGGER, source_data.TARGET_LAG_SEC, source_data.GRAPH_HISTORY_VALID_FROM
-            );
-    ';
-
-    -- Capture merge action description
-    SELECT
-        "number of rows inserted" || ' inserted, ' ||
-        "number of rows updated" || ' updated.'
-    INTO lv_merge_action_desc
-    FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()));
-
-    lv_proc_return_message := 'Successfully merged ' || lv_merge_action_desc || ' into T_DYNAMIC_TABLE_REFRESH_HISTORY_FLAT for ' || :lv_qualified_name_to_filter || '.';
+    lv_message := lv_message || 'Starting DYNAMIC TABLE COLLECTION DRIVER at ' || CURRENT_TIMESTAMP() || '\n';
     
-    -- Update T_DYNAMIC_TABLE_TRACKING with SUCCESS status
-    UPDATE IDENTIFIER(:LV_TRACKING_TABLE_FQDN)
-    SET 
-        LAST_REFRESH_HISTORY_COLLECTION_TIMESTAMP = CURRENT_TIMESTAMP()::TIMESTAMP_NTZ,
-        LAST_REFRESH_HISTORY_COLLECTION_STATUS = 'SUCCESS',
-        LAST_REFRESH_HISTORY_COLLECTION_MESSAGE = :lv_proc_return_message,
-        UPDATED_AT = CURRENT_TIMESTAMP()::TIMESTAMP_NTZ
-    WHERE QUALIFIED_NAME = :lv_qualified_name_to_filter;
+    -- --- Step 1: Launch all ASYNC jobs ---
+    OPEN c_tables;
+    LOOP
+        FETCH c_tables INTO lv_db_name, lv_schema_name, lv_table_name, lv_current_table_qualified_name,
+                             lv_track_refresh_history, lv_track_metadata_snapshot, lv_track_graph_history,
+                             lv_refresh_history_days, lv_metadata_days;
+        IF (c_tables%NOTFOUND) THEN
+            BREAK; -- Exit loop when no more records
+        END IF;
 
-    RETURN lv_proc_return_message;
+        lv_total_tables_found := lv_total_tables_found + 1;
+
+        BEGIN -- Inner BEGIN/END block for per-table ASYNC job submission error handling
+            
+            lv_message := lv_message || '  Submitting jobs for table: ' || lv_current_table_qualified_name || '\n';
+
+            -- Launch SP_COLLECT_DT_REFRESH_HISTORY ASYNC
+            -- This sub-procedure *must* be modified to update T_DYNAMIC_TABLE_TRACKING itself
+            IF (lv_track_refresh_history) THEN
+                ASYNC ( -- Correct ASYNC syntax
+                    EXECUTE IMMEDIATE 'CALL ' || :LV_REFRESH_HISTORY_PROC_FQDN || '(?, ?, ?, ?)'
+                    USING lv_db_name, lv_schema_name, lv_table_name, lv_refresh_history_days
+                );
+                lv_jobs_launched_count := lv_jobs_launched_count + 1;
+                lv_message := lv_message || '    Refresh History job submitted ASYNC.\n';
+            END IF;
+
+            -- Launch SP_COLLECT_DYNAMIC_TABLE_METADATA ASYNC
+            -- This sub-procedure *must* be modified to update T_DYNAMIC_TABLE_TRACKING itself
+            IF (lv_track_metadata_snapshot) THEN
+                ASYNC ( -- Correct ASYNC syntax
+                    EXECUTE IMMEDIATE 'CALL ' || :LV_METADATA_PROC_FQDN || '(?, ?, ?)'
+                    USING lv_db_name, lv_schema_name, lv_table_name
+                );
+                lv_jobs_launched_count := lv_jobs_launched_count + 1;
+                lv_message := lv_message || '    Metadata Snapshot job submitted ASYNC.\n';
+            END IF;
+
+            -- Add logic for TRACK_GRAPH_HISTORY if you implement that procedure later
+            -- This sub-procedure *must* also update T_DYNAMIC_TABLE_TRACKING itself
+            -- IF (lv_track_graph_history) THEN
+            --    ASYNC (EXECUTE IMMEDIATE 'CALL ' || :LV_GRAPH_HISTORY_PROC_FQDN || '(?)' USING lv_current_table_qualified_name);
+            --    lv_jobs_launched_count := lv_jobs_launched_count + 1;
+            --    lv_message := lv_message || '    Graph History job submitted ASYNC.\n';
+            -- END IF;
+
+        EXCEPTION
+            WHEN OTHER THEN
+                lv_loop_error_message := 'ERROR submitting ASYNC job(s) for ' || lv_current_table_qualified_name || ': ' || SQLERRM();
+                lv_message := lv_message || '    ' || lv_loop_error_message || '\n';
+                -- Submission failure for a table doesn't halt the driver.
+                -- The tracking table for this specific table/job won't be updated by child SP,
+                -- which is an implicit 'failed to start' status.
+        END; -- End inner BEGIN/END block for submission
+    END LOOP;
+    CLOSE c_tables;
+
+    lv_message := lv_message || 'All ASYNC jobs launched (' || lv_jobs_launched_count || ' jobs). Awaiting all completion...\n';
+
+    -- --- Step 2: AWAIT ALL submitted ASYNC jobs ---
+    -- This single statement will block until all ASYNC jobs initiated in this session are done.
+    -- The individual sub-procedures are responsible for updating the tracking table with SUCCESS/FAILED.
+    AWAIT ALL; 
+    lv_message := lv_message || 'All ASYNC jobs completed. Individual job statuses are updated by child procedures.\n';
+
+    -- --- Step 3: Final Summary and Return ---
+    -- We can get a final count based on the tracking table's *current* state.
+    -- This requires SUMMING status from T_DYNAMIC_TABLE_TRACKING AFTER all jobs (and their updates) are done.
+    
+    SELECT 
+        COUNT(CASE WHEN LAST_REFRESH_HISTORY_COLLECTION_STATUS = 'SUCCESS' THEN 1 END) +
+        COUNT(CASE WHEN LAST_METADATA_COLLECTION_STATUS = 'SUCCESS' THEN 1 END)
+    INTO lv_overall_success_count
+    FROM IDENTIFIER(:LV_TRACKING_TABLE_FQDN)
+    WHERE LAST_REFRESH_HISTORY_COLLECTION_TIMESTAMP >= (CURRENT_TIMESTAMP() - INTERVAL '1 MINUTE') OR -- Only count recent completions
+          LAST_METADATA_COLLECTION_TIMESTAMP >= (CURRENT_TIMESTAMP() - INTERVAL '1 MINUTE'); -- This is a heuristic, adjust interval if job runs infrequently
+
+    SELECT 
+        COUNT(CASE WHEN LAST_REFRESH_HISTORY_COLLECTION_STATUS = 'FAILED' THEN 1 END) +
+        COUNT(CASE WHEN LAST_METADATA_COLLECTION_STATUS = 'FAILED' THEN 1 END)
+    INTO lv_overall_fail_count
+    FROM IDENTIFIER(:LV_TRACKING_TABLE_FQDN)
+    WHERE LAST_REFRESH_HISTORY_COLLECTION_TIMESTAMP >= (CURRENT_TIMESTAMP() - INTERVAL '1 MINUTE') OR
+          LAST_METADATA_COLLECTION_TIMESTAMP >= (CURRENT_TIMESTAMP() - INTERVAL '1 MINUTE');
+
+    lv_message := lv_message || 'DYNAMIC TABLE COLLECTION DRIVER finished at ' || CURRENT_TIMESTAMP() || '\n';
+    lv_message := lv_message || 'Total tables found in tracking: ' || lv_total_tables_found || '\n';
+    lv_message := lv_message || 'Total ASYNC Jobs launched: ' || lv_jobs_launched_count || '\n';
+    lv_message := lv_message || 'Recent Overall Success (from tracking table): ' || lv_overall_success_count || '\n';
+    lv_message := lv_message || 'Recent Overall Failed (from tracking table): ' || lv_overall_fail_count || '\n';
+    
+    RETURN lv_message;
 
 EXCEPTION
     WHEN OTHER THEN
-        lv_error_message := 'Error during DYNAMIC_TABLE_REFRESH_HISTORY collection for ' || COALESCE(:P_DATABASE_NAME, 'N/A') || '.' || COALESCE(:P_SCHEMA_NAME, 'N/A') || '.' || COALESCE(:P_TABLE_NAME, 'N/A') || '. SQLSTATE: ' || SQLSTATE() || ', SQLCODE: ' || SQLCODE() || ', Message: ' || SQLERRM();
-        -- Update T_DYNAMIC_TABLE_TRACKING with FAILED status
-        UPDATE IDENTIFIER(:LV_TRACKING_TABLE_FQDN)
-        SET 
-            LAST_REFRESH_HISTORY_COLLECTION_TIMESTAMP = CURRENT_TIMESTAMP()::TIMESTAMP_NTZ,
-            LAST_REFRESH_HISTORY_COLLECTION_STATUS = 'FAILED',
-            LAST_REFRESH_HISTORY_COLLECTION_MESSAGE = :lv_error_message,
-            UPDATED_AT = CURRENT_TIMESTAMP()::TIMESTAMP_NTZ
-        WHERE QUALIFIED_NAME = :lv_qualified_name_to_filter;
-        RETURN lv_error_message;
+        lv_error_message_overall := 'Major Error in DYNAMIC TABLE COLLECTION DRIVER: ' || SQLERRM();
+        RETURN lv_error_message_overall;
 END;
 $$;
