@@ -1,55 +1,168 @@
-CREATE OR REPLACE PROCEDURE ..INSERT_DT_REFRESH_HISTORY(
-    DB_NAME VARCHAR,
-    SCHEMA_NAME VARCHAR,
-    TABLE_NAME VARCHAR
+-- CREATE STORED PROCEDURE STATEMENT - Collects DYNAMIC_TABLES metadata
+-- UPDATED to perform its OWN update to T_DYNAMIC_TABLE_TRACKING
+-- Replace YOUR_DB and YOUR_SCHEMA.
+
+CREATE OR REPLACE PROCEDURE YOUR_DB.YOUR_SCHEMA.SP_COLLECT_DYNAMIC_TABLE_METADATA(
+    P_DATABASE_NAME VARCHAR,
+    P_SCHEMA_NAME VARCHAR,
+    P_TABLE_NAME VARCHAR
 )
 RETURNS VARCHAR
-LANGUAGE PYTHON
-RUNTIME_VERSION = '3.9'
-PACKAGES = ('snowflake-snowpark-python')
-HANDLER = 'insert_refresh_history_handler'
-AS $$
-import snowflake.snowpark as snowpark
-from snowflake.snowpark.functions import col, max as max_
-from snowflake.snowpark.types import TimestampType
-
-def insert_refresh_history_handler(session: snowpark.Session, db_name: str, schema_name: str, table_name: str):
-    history_table_identifier = f'"{db_name}"."{schema_name}"."T_DT_REFRESH_HISTORY"'
-    dynamic_table_identifier = f'"{db_name}"."{schema_name}"."{table_name}"'
-
-    try:
-        # Step 1: Get the latest REFRESH_END_TIME from history table
-        latest_refresh_time_df = session.table(history_table_identifier).filter(
-            (col("DATABASE_NAME") == db_name.upper()) &
-            (col("SCHEMA_NAME") == schema_name.upper()) &
-            (col("TABLE_NAME") == table_name.upper())
-        ).agg(max_("REFRESH_END_TIME").alias("latest_refresh_time")).collect()
-
-        latest_refresh_time = latest_refresh_time_df[0]["LATEST_REFRESH_TIME"] if latest_refresh_time_df else None
-    except Exception as e:
-        latest_refresh_time = None
-
-    # Step 2: Query the dynamic table refresh history
-    refresh_df = session.table("INFORMATION_SCHEMA.DYNAMIC_TABLE_REFRESH_HISTORY") \
-        .filter((col("NAME") == table_name) & (col("DATABASE_NAME") == db_name) & (col("SCHEMA_NAME") == schema_name))
+LANGUAGE SQL
+EXECUTE AS CALLER
+AS
+$$
+DECLARE
+    lv_func_args VARCHAR := '';
+    lv_merge_action_desc VARCHAR;
+    lv_error_message VARCHAR;
+    lv_records_fetched INTEGER;
+    lv_filter_provided BOOLEAN := FALSE;
+    lv_qualified_name_to_filter VARCHAR;
+    lv_proc_return_message VARCHAR;
     
-    if latest_refresh_time:
-        refresh_df = refresh_df.filter(col("REFRESH_END_TIME") > latest_refresh_time)
+    -- Configuration for tracking table
+    LV_TRACKING_TABLE_FQDN VARCHAR := 'YOUR_DB.YOUR_SCHEMA.T_DYNAMIC_TABLE_TRACKING'; -- Must be defined here
 
-    # Step 3: Convert TIMESTAMP_LTZ → TIMESTAMP_NTZ
-    for col_name in ["DATA_TIMESTAMP", "REFRESH_START_TIME", "REFRESH_END_TIME", "COMPLETION_TARGET"]:
-        refresh_df = refresh_df.with_column(col_name, col(col_name).cast(TimestampType()))
+BEGIN
+    -- Initialize status as RUNNING/IN_PROGRESS before starting main logic
+    lv_qualified_name_to_filter := :P_DATABASE_NAME || '.' || :P_SCHEMA_NAME || '.' || :P_TABLE_NAME;
+    UPDATE IDENTIFIER(:LV_TRACKING_TABLE_FQDN)
+    SET 
+        LAST_METADATA_COLLECTION_TIMESTAMP = CURRENT_TIMESTAMP()::TIMESTAMP_NTZ,
+        LAST_METADATA_COLLECTION_STATUS = 'IN_PROGRESS',
+        LAST_METADATA_COLLECTION_MESSAGE = 'Collection started.',
+        UPDATED_AT = CURRENT_TIMESTAMP()::TIMESTAMP_NTZ
+    WHERE QUALIFIED_NAME = :lv_qualified_name_to_filter;
 
-    # Step 4: Select only required columns for insert
-    insert_df = refresh_df.select(
-        col("DATABASE_NAME"), col("SCHEMA_NAME"), col("NAME").alias("TABLE_NAME"),
-        "STATE", "STATE_CODE", "STATE_MESSAGE", "QUERY_ID",
-        "DATA_TIMESTAMP", "REFRESH_START_TIME", "REFRESH_END_TIME", "COMPLETION_TARGET",
-        "STATISTICS", "REFRESH_ACTION", "REFRESH_TRIGGER", "TARGET_LAG_SEC"
-    )
+    -- Strict Input Validation
+    IF (P_DATABASE_NAME IS NOT NULL AND TRIM(P_DATABASE_NAME) != '' AND
+        P_SCHEMA_NAME IS NOT NULL AND TRIM(P_SCHEMA_NAME) != '' AND
+        P_TABLE_NAME IS NOT NULL AND TRIM(P_TABLE_NAME) != '') THEN
+        
+        lv_func_args := 'NAME => ''' || :lv_qualified_name_to_filter || '''';
+        lv_filter_provided := TRUE;
+    ELSE
+        lv_proc_return_message := 'ERROR: All of P_DATABASE_NAME, P_SCHEMA_NAME, AND P_TABLE_NAME must be provided and non-empty.';
+        -- Update tracking table with FAILED status
+        UPDATE IDENTIFIER(:LV_TRACKING_TABLE_FQDN)
+        SET 
+            LAST_METADATA_COLLECTION_TIMESTAMP = CURRENT_TIMESTAMP()::TIMESTAMP_NTZ,
+            LAST_METADATA_COLLECTION_STATUS = 'FAILED_INPUT', -- More specific status
+            LAST_METADATA_COLLECTION_MESSAGE = :lv_proc_return_message,
+            UPDATED_AT = CURRENT_TIMESTAMP()::TIMESTAMP_NTZ
+        WHERE QUALIFIED_NAME = :lv_qualified_name_to_filter;
+        RETURN lv_proc_return_message;
+    END IF;
 
-    # Step 5: Append to the history table
-    insert_df.write.mode("append").save_as_table(history_table_identifier)
+    EXECUTE IMMEDIATE '
+        MERGE INTO YOUR_DB.YOUR_SCHEMA.T_DYNAMIC_TABLE_METADATA_LATEST_SNAPSHOT AS target_table
+        USING (
+            SELECT
+                CURRENT_TIMESTAMP()::TIMESTAMP_NTZ AS COLLECTION_TIMESTAMP_SOURCE,
+                dt.DATABASE_NAME,
+                dt.SCHEMA_NAME,
+                dt.NAME AS TABLE_NAME,
+                dt.QUALIFIED_NAME,
+                dt.TARGET_LAG_SEC,
+                dt.TARGET_LAG_TYPE,
+                
+                dt.SCHEDULING_STATE:STATE::TEXT AS SCHEDULING_STATE_STATUS,
+                dt.SCHEDULING_STATE:REASON_CODE::TEXT AS SCHEDULING_STATE_REASON_CODE,
+                dt.SCHEDULING_STATE:REASON_MESSAGE::TEXT AS SCHEDULING_STATE_REASON_MESSAGE,
+                dt.SCHEDULING_STATE:SUSPENDED_ON::TIMESTAMP_NTZ AS SCHEDULING_STATE_SUSPENDED_ON,
+                dt.SCHEDULING_STATE:RESUMED_ON::TIMESTAMP_NTZ AS SCHEDULING_STATE_RESUMED_ON,
 
-    return f"Inserted {insert_df.count()} rows into {history_table_identifier}"
+                dt.MEAN_LAG_SEC,
+                dt.MAXIMUM_LAG_SEC,
+                dt.TIME_ABOVE_TARGET_LAG_SEC,
+                dt.TIME_WITHIN_TARGET_LAG_RATIO,
+                dtrh.LATEST_DATA_TIMESTAMP::TIMESTAMP_NTZ AS LATEST_DATA_TIMESTAMP,
+                dtrh.LAST_COMPLETED_REFRESH_STATE,
+                dtrh.LAST_COMPLETED_REFRESH_STATE_CODE,
+                dtrh.LAST_COMPLETED_REFRESH_STATE_MESSAGE,
+                dtrh.EXECUTING_REFRESH_QUERY_ID
+            FROM
+                TABLE(INFORMATION_SCHEMA.DYNAMIC_TABLES(' || lv_func_args || ')) dtrh
+            WHERE dtrh.QUALIFIED_NAME = ''' || :lv_qualified_name_to_filter || '''
+        ) AS source_data
+        ON target_table.QUALIFIED_NAME = source_data.QUALIFIED_NAME
+
+        WHEN MATCHED THEN
+            UPDATE SET
+                target_table.COLLECTION_TIMESTAMP = source_data.COLLECTION_TIMESTAMP_SOURCE,
+                target_table.DATABASE_NAME = source_data.DATABASE_NAME,
+                target_table.SCHEMA_NAME = source_data.SCHEMA_NAME,
+                target_table.TABLE_NAME = source_data.TABLE_NAME,
+                target_table.TARGET_LAG_SEC = source_data.TARGET_LAG_SEC,
+                target_table.TARGET_LAG_TYPE = source_data.TARGET_LAG_TYPE,
+                target_table.SCHEDULING_STATE_STATUS = source_data.SCHEDULING_STATE_STATUS,
+                target_table.SCHEDULING_STATE_REASON_CODE = source_data.SCHEDULING_STATE_REASON_CODE,
+                target_table.SCHEDULING_STATE_REASON_MESSAGE = source_data.SCHEDULING_STATE_REASON_MESSAGE,
+                target_table.SCHEDULING_STATE_SUSPENDED_ON = source_data.SCHEDULING_STATE_SUSPENDED_ON,
+                target_table.SCHEDULING_STATE_RESUMED_ON = source_data.SCHEDULING_STATE_RESUMED_ON,
+                target_table.MEAN_LAG_SEC = source_data.MEAN_LAG_SEC,
+                target_table.MAXIMUM_LAG_SEC = source_data.MAXIMUM_LAG_SEC,
+                target_table.TIME_ABOVE_TARGET_LAG_SEC = source_data.TIME_ABOVE_TARGET_LAG_SEC,
+                target_table.TIME_WITHIN_TARGET_LAG_RATIO = source_data.TIME_WITHIN_TARGET_LAG_RATIO,
+                target_table.LATEST_DATA_TIMESTAMP = source_data.LATEST_DATA_TIMESTAMP,
+                target_table.LAST_COMPLETED_REFRESH_STATE = source_data.LAST_COMPLETED_REFRESH_STATE,
+                target_table.LAST_COMPLETED_REFRESH_STATE_CODE = source_data.LAST_COMPLETED_REFRESH_STATE_CODE,
+                target_table.LAST_COMPLETED_REFRESH_STATE_MESSAGE = source_data.LAST_COMPLETED_REFRESH_STATE_MESSAGE,
+                target_table.EXECUTING_REFRESH_QUERY_ID = source_data.EXECUTING_REFRESH_QUERY_ID
+        WHEN NOT MATCHED THEN
+            INSERT (
+                COLLECTION_TIMESTAMP,
+                DATABASE_NAME, SCHEMA_NAME, TABLE_NAME, QUALIFIED_NAME,
+                TARGET_LAG_SEC, TARGET_LAG_TYPE,
+                SCHEDULING_STATE_STATUS, SCHEDULING_STATE_REASON_CODE, SCHEDULING_STATE_REASON_MESSAGE,
+                SCHEDULING_STATE_SUSPENDED_ON, SCHEDULING_STATE_RESUMED_ON,
+                MEAN_LAG_SEC, MAXIMUM_LAG_SEC, TIME_ABOVE_TARGET_LAG_SEC, TIME_WITHIN_TARGET_LAG_RATIO,
+                LATEST_DATA_TIMESTAMP, LAST_COMPLETED_REFRESH_STATE, LAST_COMPLETED_REFRESH_STATE_CODE,
+                LAST_COMPLETED_REFRESH_STATE_MESSAGE, EXECUTING_REFRESH_QUERY_ID
+            )
+            VALUES (
+                source_data.COLLECTION_TIMESTAMP_SOURCE,
+                source_data.DATABASE_NAME, source_data.SCHEMA_NAME, source_data.TABLE_NAME, source_data.QUALIFIED_NAME,
+                source_data.TARGET_LAG_SEC, source_data.TARGET_LAG_TYPE,
+                source_data.SCHEDULING_STATE_STATUS, source_data.SCHEDULING_STATE_REASON_CODE, source_data.SCHEDULING_STATE_REASON_MESSAGE,
+                source_data.SCHEDULING_STATE_SUSPENDED_ON, source_data.SCHEDULING_STATE_RESUMED_ON,
+                source_data.MEAN_LAG_SEC, source_data.MAXIMUM_LAG_SEC, source_data.TIME_ABOVE_TARGET_LAG_SEC, source_data.TIME_WITHIN_TARGET_LAG_RATIO,
+                source_data.LATEST_DATA_TIMESTAMP, source_data.LAST_COMPLETED_REFRESH_STATE, source_data.LAST_COMPLETED_REFRESH_STATE_CODE,
+                source_data.LAST_COMPLETED_REFRESH_STATE_MESSAGE, source_data.EXECUTING_REFRESH_QUERY_ID
+            );
+    ';
+
+    SELECT
+        "number of rows inserted" || ' inserted, ' ||
+        "number of rows updated" || ' updated.'
+    INTO lv_merge_action_desc
+    FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()));
+
+    lv_proc_return_message := 'Successfully merged ' || lv_merge_action_desc || ' into T_DYNAMIC_TABLE_METADATA_LATEST_SNAPSHOT.';
+    
+    -- Update T_DYNAMIC_TABLE_TRACKING with SUCCESS status
+    UPDATE IDENTIFIER(:LV_TRACKING_TABLE_FQDN)
+    SET 
+        LAST_METADATA_COLLECTION_TIMESTAMP = CURRENT_TIMESTAMP()::TIMESTAMP_NTZ,
+        LAST_METADATA_COLLECTION_STATUS = 'SUCCESS',
+        LAST_METADATA_COLLECTION_MESSAGE = :lv_proc_return_message,
+        UPDATED_AT = CURRENT_TIMESTAMP()::TIMESTAMP_NTZ
+    WHERE QUALIFIED_NAME = :lv_qualified_name_to_filter;
+
+    RETURN lv_proc_return_message;
+
+EXCEPTION
+    WHEN OTHER THEN
+        lv_error_message := 'Error during DYNAMIC_TABLES metadata collection for ' || COALESCE(:P_DATABASE_NAME, 'N/A') || '.' || COALESCE(:P_SCHEMA_NAME, 'N/A') || '.' || COALESCE(:P_TABLE_NAME, 'N/A') || '. SQLSTATE: ' || SQLSTATE() || ', SQLCODE: ' || SQLCODE() || ', Message: ' || SQLERRM();
+        -- Update T_DYNAMIC_TABLE_TRACKING with FAILED status
+        UPDATE IDENTIFIER(:LV_TRACKING_TABLE_FQDN)
+        SET 
+            LAST_METADATA_COLLECTION_TIMESTAMP = CURRENT_TIMESTAMP()::TIMESTAMP_NTZ,
+            LAST_METADATA_COLLECTION_STATUS = 'FAILED',
+            LAST_METADATA_COLLECTION_MESSAGE = :lv_error_message,
+            UPDATED_AT = CURRENT_TIMESTAMP()::TIMESTAMP_NTZ
+        WHERE QUALIFIED_NAME = :lv_qualified_name_to_filter;
+        RETURN lv_error_message;
+END;
 $$;
