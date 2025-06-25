@@ -9,17 +9,28 @@ DECLARE
     LV_TRACKING_TABLE_FQDN VARCHAR := 'YOUR_DB.YOUR_SCHEMA.T_DYNAMIC_TABLE_TRACKING';
     LV_REFRESH_HISTORY_PROC_FQDN VARCHAR := 'YOUR_DB.YOUR_SCHEMA.SP_COLLECT_DT_REFRESH_HISTORY';
     LV_METADATA_PROC_FQDN VARCHAR := 'YOUR_DB.YOUR_SCHEMA.SP_COLLECT_DYNAMIC_TABLE_METADATA';
-    -- LV_GRAPH_HISTORY_PROC_FQDN VARCHAR := 'YOUR_DB.YOUR_SCHEMA.SP_COLLECT_DT_GRAPH_HISTORY'; -- Placeholder
     
     -- --- Internal Variables ---
     lv_message VARCHAR DEFAULT '';
     lv_total_tables_found INTEGER DEFAULT 0;
     lv_jobs_launched_count INTEGER DEFAULT 0;
-    lv_current_table_qualified_name VARCHAR; 
+    lv_overall_success_count INTEGER DEFAULT 0;
+    lv_overall_fail_count INTEGER DEFAULT 0;
+    lv_db_name VARCHAR;
+    lv_schema_name VARCHAR;
+    lv_table_name VARCHAR;
+    lv_qualified_name VARCHAR;
+    lv_track_refresh_history BOOLEAN;
+    lv_track_metadata_snapshot BOOLEAN;
+    lv_track_graph_history BOOLEAN; -- Not implemented yet, but included in schema
     lv_refresh_history_days NUMBER;
     lv_metadata_days NUMBER;
     lv_loop_error_message VARCHAR; -- For errors during ASYNC job SUBMISSION
     lv_error_message_overall VARCHAR; -- For major errors outside loop
+
+    -- --- NEW: Variables for precise start/end time of this driver run ---
+    lv_driver_run_start_time TIMESTAMP_LTZ;
+    lv_driver_run_end_time TIMESTAMP_LTZ;
 
     -- Cursor to select active tables needing collection
     c_tables CURSOR FOR
@@ -31,12 +42,14 @@ DECLARE
         WHERE IS_ACTIVE = TRUE;
 
 BEGIN
-    lv_message := lv_message || 'Starting DYNAMIC TABLE COLLECTION DRIVER at ' || CURRENT_TIMESTAMP() || '\n';
+    -- Capture the exact start time of this driver run
+    lv_driver_run_start_time := CURRENT_TIMESTAMP();
+    lv_message := lv_message || 'Starting DYNAMIC TABLE COLLECTION DRIVER at ' || lv_driver_run_start_time || '\n';
     
     -- --- Step 1: Launch all ASYNC jobs ---
     OPEN c_tables;
     LOOP
-        FETCH c_tables INTO lv_db_name, lv_schema_name, lv_table_name, lv_current_table_qualified_name,
+        FETCH c_tables INTO lv_db_name, lv_schema_name, lv_table_name, lv_qualified_name,
                              lv_track_refresh_history, lv_track_metadata_snapshot, lv_track_graph_history,
                              lv_refresh_history_days, lv_metadata_days;
         IF (c_tables%NOTFOUND) THEN
@@ -47,7 +60,7 @@ BEGIN
 
         BEGIN -- Inner BEGIN/END block for per-table ASYNC job submission error handling
             
-            lv_message := lv_message || '  Submitting jobs for table: ' || lv_current_table_qualified_name || '\n';
+            lv_message := lv_message || '  Submitting jobs for table: ' || lv_qualified_name || '\n';
 
             -- Launch SP_COLLECT_DT_REFRESH_HISTORY ASYNC
             -- This sub-procedure *must* be modified to update T_DYNAMIC_TABLE_TRACKING itself
@@ -74,18 +87,16 @@ BEGIN
             -- Add logic for TRACK_GRAPH_HISTORY if you implement that procedure later
             -- This sub-procedure *must* also update T_DYNAMIC_TABLE_TRACKING itself
             -- IF (lv_track_graph_history) THEN
-            --    ASYNC (EXECUTE IMMEDIATE 'CALL ' || :LV_GRAPH_HISTORY_PROC_FQDN || '(?)' USING lv_current_table_qualified_name);
+            --    ASYNC (EXECUTE IMMEDIATE 'CALL ' || :LV_GRAPH_HISTORY_PROC_FQDN || '(?)' USING lv_qualified_name);
             --    lv_jobs_launched_count := lv_jobs_launched_count + 1;
             --    lv_message := lv_message || '    Graph History job submitted ASYNC.\n';
             -- END IF;
 
         EXCEPTION
             WHEN OTHER THEN
-                lv_loop_error_message := 'ERROR submitting ASYNC job(s) for ' || lv_current_table_qualified_name || ': ' || SQLERRM();
+                lv_loop_error_message := 'ERROR submitting ASYNC job(s) for ' || lv_qualified_name || ': ' || SQLERRM();
                 lv_message := lv_message || '    ' || lv_loop_error_message || '\n';
-                -- Submission failure for a table doesn't halt the driver.
-                -- The tracking table for this specific table/job won't be updated by child SP,
-                -- which is an implicit 'failed to start' status.
+                -- If submission fails, it's implicitly a 'failed to start' for this table
         END; -- End inner BEGIN/END block for submission
     END LOOP;
     CLOSE c_tables;
@@ -94,35 +105,36 @@ BEGIN
 
     -- --- Step 2: AWAIT ALL submitted ASYNC jobs ---
     -- This single statement will block until all ASYNC jobs initiated in this session are done.
-    -- The individual sub-procedures are responsible for updating the tracking table with SUCCESS/FAILED.
     AWAIT ALL; 
-    lv_message := lv_message || 'All ASYNC jobs completed. Individual job statuses are updated by child procedures.\n';
-
-    -- --- Step 3: Final Summary and Return ---
-    -- We can get a final count based on the tracking table's *current* state.
-    -- This requires SUMMING status from T_DYNAMIC_TABLE_TRACKING AFTER all jobs (and their updates) are done.
     
+    -- Capture the exact end time of this driver run
+    lv_driver_run_end_time := CURRENT_TIMESTAMP();
+    lv_message := lv_message || 'All ASYNC jobs completed. Collecting summary from tracking table...\n';
+
+    -- --- Step 3: Final Summary from T_DYNAMIC_TABLE_TRACKING ---
+    -- Count successes for jobs whose collection timestamp falls within THIS driver run's window
     SELECT 
-        COUNT(CASE WHEN LAST_REFRESH_HISTORY_COLLECTION_STATUS = 'SUCCESS' THEN 1 END) +
-        COUNT(CASE WHEN LAST_METADATA_COLLECTION_STATUS = 'SUCCESS' THEN 1 END)
+        COUNT(CASE WHEN LAST_REFRESH_HISTORY_COLLECTION_STATUS = 'SUCCESS' 
+                   AND LAST_REFRESH_HISTORY_COLLECTION_TIMESTAMP BETWEEN :lv_driver_run_start_time AND :lv_driver_run_end_time THEN 1 END) +
+        COUNT(CASE WHEN LAST_METADATA_COLLECTION_STATUS = 'SUCCESS' 
+                   AND LAST_METADATA_COLLECTION_TIMESTAMP BETWEEN :lv_driver_run_start_time AND :lv_driver_run_end_time THEN 1 END)
     INTO lv_overall_success_count
-    FROM IDENTIFIER(:LV_TRACKING_TABLE_FQDN)
-    WHERE LAST_REFRESH_HISTORY_COLLECTION_TIMESTAMP >= (CURRENT_TIMESTAMP() - INTERVAL '1 MINUTE') OR -- Only count recent completions
-          LAST_METADATA_COLLECTION_TIMESTAMP >= (CURRENT_TIMESTAMP() - INTERVAL '1 MINUTE'); -- This is a heuristic, adjust interval if job runs infrequently
+    FROM IDENTIFIER(:LV_TRACKING_TABLE_FQDN);
 
+    -- Count failures for jobs whose collection timestamp falls within THIS driver run's window
     SELECT 
-        COUNT(CASE WHEN LAST_REFRESH_HISTORY_COLLECTION_STATUS = 'FAILED' THEN 1 END) +
-        COUNT(CASE WHEN LAST_METADATA_COLLECTION_STATUS = 'FAILED' THEN 1 END)
+        COUNT(CASE WHEN LAST_REFRESH_HISTORY_COLLECTION_STATUS = 'FAILED' 
+                   AND LAST_REFRESH_HISTORY_COLLECTION_TIMESTAMP BETWEEN :lv_driver_run_start_time AND :lv_driver_run_end_time THEN 1 END) +
+        COUNT(CASE WHEN LAST_METADATA_COLLECTION_STATUS = 'FAILED' 
+                   AND LAST_METADATA_COLLECTION_TIMESTAMP BETWEEN :lv_driver_run_start_time AND :lv_driver_run_end_time THEN 1 END)
     INTO lv_overall_fail_count
-    FROM IDENTIFIER(:LV_TRACKING_TABLE_FQDN)
-    WHERE LAST_REFRESH_HISTORY_COLLECTION_TIMESTAMP >= (CURRENT_TIMESTAMP() - INTERVAL '1 MINUTE') OR
-          LAST_METADATA_COLLECTION_TIMESTAMP >= (CURRENT_TIMESTAMP() - INTERVAL '1 MINUTE');
+    FROM IDENTIFIER(:LV_TRACKING_TABLE_FQDN);
 
-    lv_message := lv_message || 'DYNAMIC TABLE COLLECTION DRIVER finished at ' || CURRENT_TIMESTAMP() || '\n';
-    lv_message := lv_message || 'Total tables found in tracking: ' || lv_total_tables_found || '\n';
+    lv_message := lv_message || 'DYNAMIC TABLE COLLECTION DRIVER finished at ' || lv_driver_run_end_time || '\n';
+    lv_message := lv_message || 'Total tables in tracking: ' || lv_total_tables_found || '\n';
     lv_message := lv_message || 'Total ASYNC Jobs launched: ' || lv_jobs_launched_count || '\n';
-    lv_message := lv_message || 'Recent Overall Success (from tracking table): ' || lv_overall_success_count || '\n';
-    lv_message := lv_message || 'Recent Overall Failed (from tracking table): ' || lv_overall_fail_count || '\n';
+    lv_message := lv_message || 'Overall Success for this run: ' || lv_overall_success_count || '\n';
+    lv_message := lv_message || 'Overall Failed for this run: ' || lv_overall_fail_count || '\n';
     
     RETURN lv_message;
 
