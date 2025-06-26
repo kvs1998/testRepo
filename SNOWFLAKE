@@ -1,104 +1,344 @@
-CREATE OR REPLACE PROCEDURE YOUR_DB.YOUR_SCHEMA.SP_COLLECT_DYNAMIC_TABLE_METADATA(
-    P_DATABASE_NAME VARCHAR,
-    P_SCHEMA_NAME VARCHAR,
-    P_TABLE_NAME VARCHAR,
-    P_DATA_STAGING_TABLE_FQDN VARCHAR,
-    P_TRACKING_STAGING_TABLE_FQDN VARCHAR,
-    P_RUN_UUID VARCHAR
-)
+-- Main Driver Stored Procedure - Orchestrates collection for all tracked tables
+-- UPDATED to use ASYNC calls for sub-procedures and manage staging tables for final merge
+-- Replace YOUR_DB and YOUR_SCHEMA.
+
+CREATE OR REPLACE PROCEDURE YOUR_DB.YOUR_SCHEMA.SP_DRIVE_ALL_DT_COLLECTION()
 RETURNS VARCHAR
 LANGUAGE SQL
 EXECUTE AS CALLER
 AS
 $$
 DECLARE
-    lv_func_args VARCHAR := '';
-    lv_records_fetched INTEGER;
-    lv_qualified_name_to_filter VARCHAR;
-    lv_collection_current_time TIMESTAMP_LTZ := CURRENT_TIMESTAMP();
+    -- --- Configuration Variables ---
+    LV_TRACKING_TABLE_FQDN VARCHAR := 'YOUR_DB.YOUR_SCHEMA.T_DYNAMIC_TABLE_TRACKING';
+    LV_REFRESH_HISTORY_PROC_FQDN VARCHAR := 'YOUR_DB.YOUR_SCHEMA.SP_COLLECT_DT_REFRESH_HISTORY';
+    LV_METADATA_PROC_FQDN VARCHAR := 'YOUR_DB.YOUR_SCHEMA.SP_COLLECT_DYNAMIC_TABLE_METADATA';
+    LV_FINAL_HISTORY_TABLE_FQDN VARCHAR := 'YOUR_DB.YOUR_SCHEMA.T_DYNAMIC_TABLE_REFRESH_HISTORY_FLAT';
+    LV_FINAL_METADATA_TABLE_FQDN VARCHAR := 'YOUR_DB.YOUR_SCHEMA.T_DYNAMIC_TABLE_METADATA_LATEST_SNAPSHOT';
 
-    lv_status VARCHAR;
-    lv_message VARCHAR;
+    -- --- Internal Variables ---
+    lv_message VARCHAR DEFAULT '';
+    lv_total_tables_found INTEGER DEFAULT 0;
+    lv_jobs_launched_count INTEGER DEFAULT 0;
+    lv_overall_success_count INTEGER DEFAULT 0;
+    lv_overall_fail_count INTEGER DEFAULT 0;
+    lv_db_name VARCHAR;
+    lv_schema_name VARCHAR;
+    lv_table_name VARCHAR;
+    lv_qualified_name VARCHAR;
+    lv_track_refresh_history BOOLEAN;
+    lv_track_metadata_snapshot BOOLEAN;
+    lv_track_graph_history BOOLEAN;
+    lv_refresh_history_days NUMBER;
+    lv_metadata_days NUMBER;
+    lv_loop_error_message VARCHAR;
+    lv_error_message_overall VARCHAR;
 
-    -- NEW: Declare custom exceptions
-    E_INPUT_VALIDATION_FAILED EXCEPTION (-20003, 'Input Validation Failed for Metadata Collection');
-    E_COLLECTION_EXECUTION_FAILED EXCEPTION (-20004, 'Data Collection Execution Failed for Metadata');
+    lv_driver_run_start_time TIMESTAMP_LTZ;
+    lv_driver_run_end_time TIMESTAMP_LTZ;
+    lv_driver_run_uuid VARCHAR := UUID_STRING(); -- Unique ID for this driver run
+
+    -- --- Staging Table Variables ---
+    lv_refresh_history_staging_table_name VARCHAR;
+    lv_refresh_history_staging_table_fqdn VARCHAR;
+    lv_metadata_staging_table_name VARCHAR;
+    lv_metadata_staging_table_fqdn VARCHAR;
+
+    -- NEW: Temporary table to store tracking updates from child procedures
+    lv_tracking_update_staging_table_name VARCHAR;
+    lv_tracking_update_staging_table_fqdn VARCHAR;
+
+    -- Cursor to select active tables needing collection
+    c_tables CURSOR FOR
+        SELECT
+            DATABASE_NAME, SCHEMA_NAME, TABLE_NAME, QUALIFIED_NAME,
+            TRACK_REFRESH_HISTORY, TRACK_METADATA_SNAPSHOT, TRACK_GRAPH_HISTORY,
+            COLLECT_REFRESH_HISTORY_DAYS, COLLECT_METADATA_DAYS
+        FROM IDENTIFIER(:LV_TRACKING_TABLE_FQDN)
+        WHERE IS_ACTIVE = TRUE;
 
 BEGIN
-    lv_qualified_name_to_filter := :P_DATABASE_NAME || '.' || :P_SCHEMA_NAME || '.' || :P_TABLE_NAME;
-    lv_status := 'SUCCESS';
-    lv_message := 'Successfully collected data into staging.';
+    lv_driver_run_start_time := CURRENT_TIMESTAMP();
+    lv_message := lv_message || 'Starting DYNAMIC TABLE COLLECTION DRIVER (UUID: ' || lv_driver_run_uuid || ') at ' || lv_driver_run_start_time || '\n';
 
-    BEGIN -- Inner block for data collection specific errors
-        IF (P_DATABASE_NAME IS NULL OR TRIM(P_DATABASE_NAME) = '' OR
-            P_SCHEMA_NAME IS NULL OR TRIM(P_SCHEMA_NAME) = '' OR
-            P_TABLE_NAME IS NULL OR TRIM(P_TABLE_NAME) = '' OR
-            P_DATA_STAGING_TABLE_FQDN IS NULL OR TRIM(P_DATA_STAGING_TABLE_FQDN) = '' OR
-            P_TRACKING_STAGING_TABLE_FQDN IS NULL OR TRIM(P_TRACKING_STAGING_TABLE_FQDN) = '' OR
-            P_RUN_UUID IS NULL OR TRIM(P_RUN_UUID) = '') THEN
+    -- --- Step 1: Create Global Temporary Staging Tables (Once per driver run) ---
 
-            lv_status := 'FAILED_INPUT';
-            lv_message := 'ERROR: Invalid input for SP_COLLECT_DYNAMIC_TABLE_METADATA. Missing required parameters.';
-            RAISE E_INPUT_VALIDATION_FAILED; -- Use declared exception
-        END IF;
+    -- History Data Staging
+    lv_refresh_history_staging_table_name := 'T_REFRESH_HISTORY_STAGE_' || REPLACE(UUID_STRING(), '-', '');
+    lv_refresh_history_staging_table_fqdn := 'YOUR_DB.YOUR_SCHEMA.' || lv_refresh_history_staging_table_name;
+    EXECUTE IMMEDIATE 'CREATE OR REPLACE TEMPORARY TABLE ' || :lv_refresh_history_staging_table_fqdn || ' LIKE ' || :LV_FINAL_HISTORY_TABLE_FQDN || ';';
+    lv_message := lv_message || 'Created temporary history staging table: ' || lv_refresh_history_staging_table_fqdn || '\n';
 
-        lv_func_args := 'NAME => ''' || :lv_qualified_name_to_filter || '''';
+    -- Metadata Staging
+    lv_metadata_staging_table_name := 'T_METADATA_STAGE_' || REPLACE(UUID_STRING(), '-', '');
+    lv_metadata_staging_table_fqdn := 'YOUR_DB.YOUR_SCHEMA.' || lv_metadata_staging_table_name;
+    EXECUTE IMMEDIATE 'CREATE OR REPLACE TEMPORARY TABLE ' || :lv_metadata_staging_table_fqdn || ' LIKE ' || :LV_FINAL_METADATA_TABLE_FQDN || ';';
+    lv_message := lv_message || 'Created temporary metadata staging table: ' || lv_metadata_staging_table_fqdn || '\n';
 
+    -- NEW: Temporary table to store tracking updates from child procedures
+    lv_tracking_update_staging_table_name := 'T_TRACKING_UPDATE_STAGE_' || REPLACE(UUID_STRING(), '-', '');
+    lv_tracking_update_staging_table_fqdn := 'YOUR_DB.YOUR_SCHEMA.' || lv_tracking_update_staging_table_name;
+    EXECUTE IMMEDIATE 'CREATE OR REPLACE TEMPORARY TABLE ' || :lv_tracking_update_staging_table_fqdn || ' (
+        QUALIFIED_NAME VARCHAR,
+        JOB_TYPE VARCHAR,       -- e.g., 'REFRESH_HISTORY', 'METADATA_SNAPSHOT'
+        STATUS VARCHAR,         -- e.g., 'SUCCESS', 'FAILED_EXECUTION', 'FAILED_INPUT', 'FAILED_SUBMISSION'
+        MESSAGE VARCHAR,
+        COLLECTION_TIMESTAMP TIMESTAMP_LTZ,
+        DRIVER_RUN_UUID VARCHAR
+    );';
+    lv_message := lv_message || 'Created temporary tracking update staging table: ' || lv_tracking_update_staging_table_fqdn || '\n';
+
+
+    -- --- Step 2: Launch ASYNC collection jobs for each table ---
+    FOR record_row IN c_tables DO
+        lv_total_tables_found := lv_total_tables_found + 1;
+
+        lv_db_name := record_row.DATABASE_NAME;
+        lv_schema_name := record_row.SCHEMA_NAME;
+        lv_table_name := record_row.TABLE_NAME;
+        lv_qualified_name := record_row.QUALIFIED_NAME;
+        lv_track_refresh_history := record_row.TRACK_REFRESH_HISTORY;
+        lv_track_metadata_snapshot := record_row.TRACK_METADATA_SNAPSHOT;
+        lv_track_graph_history := record_row.TRACK_GRAPH_HISTORY;
+        lv_refresh_history_days := record_row.COLLECT_REFRESH_HISTORY_DAYS;
+        lv_metadata_days := record_row.COLLECT_METADATA_DAYS;
+
+        BEGIN -- Inner BEGIN/END block for per-table ASYNC job submission error handling
+            lv_message := lv_message || '  Submitting jobs for table: ' || lv_qualified_name || '\n';
+
+            -- Launch SP_COLLECT_DT_REFRESH_HISTORY ASYNC
+            -- Pass data staging table and NEW tracking staging table
+            IF (lv_track_refresh_history) THEN
+                ASYNC (
+                    CALL IDENTIFIER(:LV_REFRESH_HISTORY_PROC_FQDN)(
+                        :lv_db_name, :lv_schema_name, :lv_table_name, :lv_refresh_history_days,
+                        :lv_refresh_history_staging_table_fqdn, :lv_tracking_update_staging_table_fqdn, :lv_driver_run_uuid
+                    )
+                );
+                lv_jobs_launched_count := lv_jobs_launched_count + 1;
+                lv_message := lv_message || '    Refresh History job submitted ASYNC.\n';
+            END IF;
+
+            -- Launch SP_COLLECT_DYNAMIC_TABLE_METADATA ASYNC
+            -- Pass data staging table and NEW tracking staging table
+            IF (lv_track_metadata_snapshot) THEN
+                ASYNC (
+                    CALL IDENTIFIER(:LV_METADATA_PROC_FQDN)(
+                        :lv_db_name, :lv_schema_name, :lv_table_name,
+                        :lv_metadata_staging_table_fqdn, :lv_tracking_update_staging_table_fqdn, :lv_driver_run_uuid
+                    )
+                );
+                lv_jobs_launched_count := lv_jobs_launched_count + 1;
+                lv_message := lv_message || '    Metadata Snapshot job submitted ASYNC.\n';
+            END IF;
+
+            -- Add logic for TRACK_GRAPH_HISTORY if you implement that procedure later
+
+        EXCEPTION
+            WHEN OTHER THEN
+                lv_loop_error_message := 'ERROR submitting ASYNC job(s) for ' || lv_qualified_name || ': ' || SQLERRM();
+                lv_message := lv_message || '    ' || lv_loop_error_message || '\n';
+                -- If submission fails, log this direct submission error into the tracking staging table
+                -- We insert for both types for comprehensive logging, as ASYNC submission error affects both potential jobs.
+                EXECUTE IMMEDIATE '
+                    INSERT INTO IDENTIFIER(?) (
+                        QUALIFIED_NAME, JOB_TYPE, STATUS, MESSAGE, COLLECTION_TIMESTAMP, DRIVER_RUN_UUID
+                    ) VALUES (?, ?, ?, ?, ?, ?);
+                ' USING lv_tracking_update_staging_table_fqdn, lv_qualified_name, 'REFRESH_HISTORY', 'FAILED_SUBMISSION', :lv_loop_error_message, CURRENT_TIMESTAMP(), lv_driver_run_uuid;
+                 EXECUTE IMMEDIATE '
+                    INSERT INTO IDENTIFIER(?) (
+                        QUALIFIED_NAME, JOB_TYPE, STATUS, MESSAGE, COLLECTION_TIMESTAMP, DRIVER_RUN_UUID
+                    ) VALUES (?, ?, ?, ?, ?, ?);
+                ' USING lv_tracking_update_staging_table_fqdn, lv_qualified_name, 'METADATA_SNAPSHOT', 'FAILED_SUBMISSION', :lv_loop_error_message, CURRENT_TIMESTAMP(), lv_driver_run_uuid;
+        END;
+    END LOOP;
+
+    lv_message := lv_message || 'All ASYNC jobs launched (' || lv_jobs_launched_count || ' jobs). Awaiting all completion...\n';
+
+    -- --- Step 3: AWAIT ALL launched ASYNC jobs ---
+    AWAIT ALL;
+
+    lv_driver_run_end_time := CURRENT_TIMESTAMP();
+    lv_message := lv_message || 'All ASYNC jobs completed. Merging collected data and updating tracking table...\n';
+
+    -- --- Step 4: Perform final MERGE operations from staging tables (Data Merges) ---
+
+    -- MERGE Refresh History Data
+    BEGIN
+        lv_message := lv_message || '  Merging Refresh History from staging to ' || LV_FINAL_HISTORY_TABLE_FQDN || '\n';
         EXECUTE IMMEDIATE '
-            INSERT INTO IDENTIFIER(?) (
-                COLLECTION_TIMESTAMP, DATABASE_NAME, SCHEMA_NAME, TABLE_NAME, QUALIFIED_NAME,
-                TARGET_LAG_SEC, TARGET_LAG_TYPE,
-                SCHEDULING_STATE_STATUS, SCHEDULING_STATE_REASON_CODE, SCHEDULING_STATE_REASON_MESSAGE,
-                SCHEDULING_STATE_SUSPENDED_ON, SCHEDULING_STATE_RESUMED_ON,
-                MEAN_LAG_SEC, MAXIMUM_LAG_SEC, TIME_ABOVE_TARGET_LAG_SEC, TIME_WITHIN_TARGET_LAG_RATIO,
-                LATEST_DATA_TIMESTAMP, LAST_COMPLETED_REFRESH_STATE, LAST_COMPLETED_REFRESH_STATE_CODE,
-                LAST_COMPLETED_REFRESH_STATE_MESSAGE, EXECUTING_REFRESH_QUERY_ID
-            )
-            SELECT
-                CURRENT_TIMESTAMP()::TIMESTAMP_NTZ AS COLLECTION_TIMESTAMP_SOURCE,
-                dt.DATABASE_NAME, dt.SCHEMA_NAME, dt.NAME AS TABLE_NAME, dt.QUALIFIED_NAME,
-                dt.TARGET_LAG_SEC, dt.TARGET_LAG_TYPE,
-                dt.SCHEDULING_STATE:STATE::TEXT,
-                dt.SCHEDULING_STATE:REASON_CODE::TEXT,
-                dt.SCHEDULING_STATE:REASON_MESSAGE::TEXT,
-                dt.SCHEDULING_STATE:SUSPENDED_ON::TIMESTAMP_NTZ,
-                dt.SCHEDULING_STATE:RESUMED_ON::TIMESTAMP_NTZ,
-                dt.MEAN_LAG_SEC, dt.MAXIMUM_LAG_SEC, dt.TIME_ABOVE_TARGET_LAG_SEC, dt.TIME_WITHIN_TARGET_LAG_RATIO,
-                dtrh.LATEST_DATA_TIMESTAMP::TIMESTAMP_NTZ,
-                dtrh.LAST_COMPLETED_REFRESH_STATE,
-                dtrh.LAST_COMPLETED_REFRESH_STATE_CODE,
-                dtrh.LAST_COMPLETED_REFRESH_STATE_MESSAGE,
-                dtrh.EXECUTING_REFRESH_QUERY_ID
-            FROM
-                TABLE(INFORMATION_SCHEMA.DYNAMIC_TABLES(' || lv_func_args || ')) dtrh
-            WHERE dtrh.QUALIFIED_NAME = ''' || :lv_qualified_name_to_filter || '''
-        ' USING P_DATA_STAGING_TABLE_FQDN;
-
-        lv_records_fetched := ROW_COUNT();
-        lv_message := 'Successfully collected ' || lv_records_fetched || ' records into metadata staging.';
-        lv_status := 'SUCCESS';
-
+            MERGE INTO IDENTIFIER(:1) AS target_table
+            USING IDENTIFIER(:2) AS source_data
+            ON target_table.QUALIFIED_NAME = source_data.QUALIFIED_NAME
+            AND target_table.QUERY_ID = source_data.QUERY_ID
+            WHEN MATCHED THEN
+                UPDATE SET
+                    target_table.STATE = source_data.STATE,
+                    target_table.STATE_CODE = source_data.STATE_CODE,
+                    target_table.STATE_MESSAGE = source_data.STATE_MESSAGE,
+                    target_table.REFRESH_END_TIME = source_data.REFRESH_END_TIME,
+                    target_table.NUMINSERTEDROWS = source_data.NUMINSERTEDROWS,
+                    target_table.NUMDELETEDROWS = source_data.NUMDELETEDROWS,
+                    target_table.NUMCOPIEDROWS = source_data.NUMCOPIEDROWS,
+                    target_table.NUMADDEDPARTITIONS = source_data.NUMADDEDPARTITIONS,
+                    target_table.NUMREMOVEDPARTITIONS = source_data.NUMREMOVEDPARTITIONS,
+                    target_table.REFRESH_ACTION = source_data.REFRESH_ACTION,
+                    target_table.REFRESH_TRIGGER = source_data.REFRESH_TRIGGER
+            WHEN NOT MATCHED THEN
+                INSERT (
+                    DATABASE_NAME, SCHEMA_NAME, TABLE_NAME, QUALIFIED_NAME,
+                    STATE, STATE_CODE, STATE_MESSAGE, QUERY_ID, DATA_TIMESTAMP,
+                    REFRESH_START_TIME, REFRESH_END_TIME, COMPLETION_TARGET,
+                    LAST_COMPLETED_DEPENDENCY_QUALIFIED_NAME, LAST_COMPLETED_DEPENDENCY_DATA_TIMESTAMP,
+                    NUMINSERTEDROWS, NUMDELETEDROWS, NUMCOPIEDROWS, NUMADDEDPARTITIONS, NUMREMOVEDPARTITIONS,
+                    REFRESH_ACTION, REFRESH_TRIGGER, TARGET_LAG_SEC, GRAPH_HISTORY_VALID_FROM
+                )
+                VALUES (
+                    source_data.DATABASE_NAME, source_data.SCHEMA_NAME, source_data.TABLE_NAME, source_data.QUALIFIED_NAME,
+                    source_data.STATE, source_data.STATE_CODE, source_data.STATE_MESSAGE, source_data.QUERY_ID, source_data.DATA_TIMESTAMP,
+                    source_data.REFRESH_START_TIME, source_data.REFRESH_END_TIME, source_data.COMPLETION_TARGET,
+                    source_data.LAST_COMPLETED_DEPENDENCY_QUALIFIED_NAME, source_data.LAST_COMPLETED_DEPENDENCY_DATA_TIMESTAMP,
+                    source_data.NUMINSERTEDROWS, source_data.NUMDELETEDROWS, source_data.NUMCOPIEDROWS, source_data.NUMADDEDPARTITIONS, source_data.NUMREMOVEDPARTITIONS,
+                    source_data.REFRESH_ACTION, source_data.REFRESH_TRIGGER, source_data.TARGET_LAG_SEC, source_data.GRAPH_HISTORY_VALID_FROM
+                );
+        ' USING LV_FINAL_HISTORY_TABLE_FQDN, lv_refresh_history_staging_table_fqdn;
+        lv_message := lv_message || '  Refresh History merge complete.\n';
     EXCEPTION
-        WHEN E_INPUT_VALIDATION_FAILED THEN -- Catch the specific exception
-            -- Message already set above
-            lv_status := 'FAILED_INPUT';
         WHEN OTHER THEN
-            lv_message := 'Error collecting metadata for ' || lv_qualified_name_to_filter || ': ' || SQLERRM();
-            lv_status := 'FAILED_EXECUTION';
-            -- No need to RAISE again, just handle it and fall through to the final insert
+            lv_loop_error_message := 'ERROR merging Refresh History: ' || SQLERRM();
+            lv_message := lv_message || '    ' || lv_loop_error_message || '\n';
     END;
 
-    -- Insert status directly into the tracking staging table (always executed)
-    EXECUTE IMMEDIATE '
-        INSERT INTO IDENTIFIER(?) (
-            QUALIFIED_NAME,
-            JOB_TYPE,
-            STATUS,
-            MESSAGE,
-            COLLECTION_TIMESTAMP,
-            DRIVER_RUN_UUID
-        ) VALUES (?, ?, ?, ?, ?);
-    ' USING P_TRACKING_STAGING_TABLE_FQDN, lv_qualified_name_to_filter, 'METADATA_SNAPSHOT', lv_status, lv_message, lv_collection_current_time, P_RUN_UUID;
+    -- MERGE Metadata Snapshot Data
+    BEGIN
+        lv_message := lv_message || '  Merging Metadata Snapshot from staging to ' || LV_FINAL_METADATA_TABLE_FQDN || '\n';
+        EXECUTE IMMEDIATE '
+            MERGE INTO IDENTIFIER(:1) AS target_table
+            USING IDENTIFIER(:2) AS source_data
+            ON target_table.QUALIFIED_NAME = source_data.QUALIFIED_NAME
+            WHEN MATCHED THEN
+                UPDATE SET
+                    target_table.COLLECTION_TIMESTAMP = source_data.COLLECTION_TIMESTAMP,
+                    target_table.DATABASE_NAME = source_data.DATABASE_NAME,
+                    target_table.SCHEMA_NAME = source_data.SCHEMA_NAME,
+                    target_table.TABLE_NAME = source_data.TABLE_NAME,
+                    target_table.TARGET_LAG_SEC = source_data.TARGET_LAG_SEC,
+                    target_table.TARGET_LAG_TYPE = source_data.TARGET_LAG_TYPE,
+                    target_table.SCHEDULING_STATE_STATUS = source_data.SCHEDULING_STATE_STATUS,
+                    target_table.SCHEDULING_STATE_REASON_CODE = source_data.SCHEDULING_STATE_REASON_CODE,
+                    target_table.SCHEDULING_STATE_REASON_MESSAGE = source_data.SCHEDULING_STATE_REASON_MESSAGE,
+                    target_table.SCHEDULING_STATE_SUSPENDED_ON = source_data.SCHEDULING_STATE_SUSPENDED_ON,
+                    target_table.SCHEDULING_STATE_RESUMED_ON = source_data.SCHEDULING_STATE_RESUMED_ON,
+                    target_table.MEAN_LAG_SEC = source_data.MEAN_LAG_SEC,
+                    target_table.MAXIMUM_LAG_SEC = source_data.MAXIMUM_LAG_SEC,
+                    target_table.TIME_ABOVE_TARGET_LAG_SEC = source_data.TIME_ABOVE_TARGET_LAG_SEC,
+                    target_table.TIME_WITHIN_TARGET_LAG_RATIO = source_data.TIME_WITHIN_TARGET_LAG_RATIO,
+                    target_table.LATEST_DATA_TIMESTAMP = source_data.LATEST_DATA_TIMESTAMP,
+                    target_table.LAST_COMPLETED_REFRESH_STATE = source_data.LAST_COMPLETED_REFRESH_STATE,
+                    target_table.LAST_COMPLETED_REFRESH_STATE_CODE = source_data.LAST_COMPLETED_REFRESH_STATE_CODE,
+                    target_table.LAST_COMPLETED_REFRESH_STATE_MESSAGE = source_data.LAST_COMPLETED_REFRESH_STATE_MESSAGE,
+                    target_table.EXECUTING_REFRESH_QUERY_ID = source_data.EXECUTING_REFRESH_QUERY_ID
+            WHEN NOT MATCHED THEN
+                INSERT (
+                    COLLECTION_TIMESTAMP, DATABASE_NAME, SCHEMA_NAME, TABLE_NAME, QUALIFIED_NAME,
+                    TARGET_LAG_SEC, TARGET_LAG_TYPE, SCHEDULING_STATE_STATUS, SCHEDULING_STATE_REASON_CODE,
+                    SCHEDULING_STATE_REASON_MESSAGE, SCHEDULING_STATE_SUSPENDED_ON, SCHEDULING_STATE_RESUMED_ON,
+                    MEAN_LAG_SEC, MAXIMUM_LAG_SEC, TIME_ABOVE_TARGET_LAG_SEC, TIME_WITHIN_TARGET_LAG_RATIO,
+                    LATEST_DATA_TIMESTAMP, LAST_COMPLETED_REFRESH_STATE, LAST_COMPLETED_REFRESH_STATE_CODE,
+                    LAST_COMPLETED_REFRESH_STATE_MESSAGE, EXECUTING_REFRESH_QUERY_ID
+                )
+                VALUES (
+                    source_data.COLLECTION_TIMESTAMP, source_data.DATABASE_NAME, source_data.SCHEMA_NAME, source_data.TABLE_NAME, source_data.QUALIFIED_NAME,
+                    source_data.TARGET_LAG_SEC, source_data.TARGET_LAG_TYPE, source_data.SCHEDULING_STATE_STATUS, source_data.SCHEDULING_STATE_REASON_CODE,
+                    source_data.SCHEDULING_STATE_REASON_MESSAGE, source_data.SCHEDULING_STATE_SUSPENDED_ON, source_data.SCHEDULING_STATE_RESUMED_ON,
+                    source_data.MEAN_LAG_SEC, source_data.MAXIMUM_LAG_SEC, source_data.TIME_ABOVE_TARGET_LAG_SEC, source_data.TIME_WITHIN_TARGET_LAG_RATIO,
+                    source_data.LATEST_DATA_TIMESTAMP, source_data.LAST_COMPLETED_REFRESH_STATE, source_data.LAST_COMPLETED_REFRESH_STATE_CODE,
+                    source_data.LAST_COMPLETED_REFRESH_STATE_MESSAGE, source_data.EXECUTING_REFRESH_QUERY_ID
+                );
+        ' USING LV_FINAL_METADATA_TABLE_FQDN, lv_metadata_staging_table_fqdn;
+        lv_message := lv_message || '  Metadata Snapshot merge complete.\n';
+    EXCEPTION
+        WHEN OTHER THEN
+            lv_loop_error_message := 'ERROR merging Metadata Snapshot: ' || SQLERRM();
+            lv_message := lv_message || '    ' || lv_loop_error_message || '\n';
+    END;
 
-    RETURN lv_status;
+    -- --- NEW Step 5: Merge Tracking Status Updates from Staging ---
+    BEGIN
+        lv_message := lv_message || '  Merging tracking status from staging to ' || LV_TRACKING_TABLE_FQDN || '\n';
+        EXECUTE IMMEDIATE '
+            MERGE INTO IDENTIFIER(:1) AS target_table
+            USING (
+                SELECT
+                    QUALIFIED_NAME,
+                    MAX(CASE WHEN JOB_TYPE = ''REFRESH_HISTORY'' THEN STATUS END) AS REFRESH_HISTORY_STATUS,
+                    MAX(CASE WHEN JOB_TYPE = ''REFRESH_HISTORY'' THEN MESSAGE END) AS REFRESH_HISTORY_MESSAGE,
+                    MAX(CASE WHEN JOB_TYPE = ''REFRESH_HISTORY'' THEN COLLECTION_TIMESTAMP END) AS REFRESH_HISTORY_TIMESTAMP,
+                    MAX(CASE WHEN JOB_TYPE = ''METADATA_SNAPSHOT'' THEN STATUS END) AS METADATA_SNAPSHOT_STATUS,
+                    MAX(CASE WHEN JOB_TYPE = ''METADATA_SNAPSHOT'' THEN MESSAGE END) AS METADATA_SNAPSHOT_MESSAGE,
+                    MAX(CASE WHEN JOB_TYPE = ''METADATA_SNAPSHOT'' THEN COLLECTION_TIMESTAMP END) AS METADATA_SNAPSHOT_TIMESTAMP
+                FROM IDENTIFIER(:2)
+                WHERE DRIVER_RUN_UUID = :3 -- Crucial to only merge updates from this specific driver run
+                GROUP BY QUALIFIED_NAME
+            ) AS source_data
+            ON target_table.QUALIFIED_NAME = source_data.QUALIFIED_NAME
+            WHEN MATCHED THEN
+                UPDATE SET
+                    LAST_REFRESH_HISTORY_COLLECTION_STATUS = COALESCE(source_data.REFRESH_HISTORY_STATUS, target_table.LAST_REFRESH_HISTORY_COLLECTION_STATUS),
+                    LAST_REFRESH_HISTORY_COLLECTION_MESSAGE = COALESCE(source_data.REFRESH_HISTORY_MESSAGE, target_table.LAST_REFRESH_HISTORY_COLLECTION_MESSAGE),
+                    LAST_REFRESH_HISTORY_COLLECTION_TIMESTAMP = COALESCE(source_data.REFRESH_HISTORY_TIMESTAMP, target_table.LAST_REFRESH_HISTORY_COLLECTION_TIMESTAMP),
+                    LAST_METADATA_COLLECTION_STATUS = COALESCE(source_data.METADATA_SNAPSHOT_STATUS, target_table.LAST_METADATA_COLLECTION_STATUS),
+                    LAST_METADATA_COLLECTION_MESSAGE = COALESCE(source_data.METADATA_SNAPSHOT_MESSAGE, target_table.LAST_METADATA_COLLECTION_MESSAGE),
+                    LAST_METADATA_COLLECTION_TIMESTAMP = COALESCE(source_data.METADATA_SNAPSHOT_TIMESTAMP, target_table.LAST_METADATA_COLLECTION_TIMESTAMP),
+                    UPDATED_AT = CURRENT_TIMESTAMP()::TIMESTAMP_NTZ;
+            -- Assuming T_DYNAMIC_TABLE_TRACKING is pre-populated and only updates are needed.
+            -- If new tables can be added to tracking during a run, a NOT MATCHED clause might be needed here.
+        ' USING LV_TRACKING_TABLE_FQDN, lv_tracking_update_staging_table_fqdn, lv_driver_run_uuid;
+        lv_message := lv_message || '  Tracking status merge complete.\n';
+    EXCEPTION
+        WHEN OTHER THEN
+            lv_loop_error_message := 'ERROR merging tracking status: ' || SQLERRM();
+            lv_message := lv_message || '    ' || lv_loop_error_message || '\n';
+    END;
+
+    -- --- Step 6: Clean up ALL Temporary Staging Tables ---
+    EXECUTE IMMEDIATE 'DROP TABLE IF EXISTS ' || :lv_refresh_history_staging_table_fqdn || ';';
+    EXECUTE IMMEDIATE 'DROP TABLE IF EXISTS ' || :lv_metadata_staging_table_fqdn || ';';
+    EXECUTE IMMEDIATE 'DROP TABLE IF EXISTS ' || :lv_tracking_update_staging_table_fqdn || ';'; -- Drop the new tracking staging table
+    lv_message := lv_message || 'Cleaned up all temporary staging tables.\n';
+
+    -- --- Step 7: Final Summary and Return ---
+    lv_driver_run_end_time := CURRENT_TIMESTAMP();
+    lv_message := lv_message || 'DYNAMIC TABLE COLLECTION DRIVER finished at ' || lv_driver_run_end_time || '\n';
+
+    -- Recalculate success/fail counts from T_DYNAMIC_TABLE_TRACKING based on this driver run's start/end times
+    -- This sums based on the UPDATED_AT or LAST_COLLECTION_TIMESTAMP being within this driver run's window.
+    SELECT
+        COUNT(CASE WHEN LAST_REFRESH_HISTORY_COLLECTION_STATUS = 'SUCCESS'
+                   AND LAST_REFRESH_HISTORY_COLLECTION_TIMESTAMP BETWEEN :lv_driver_run_start_time AND :lv_driver_run_end_time THEN 1 END) +
+        COUNT(CASE WHEN LAST_METADATA_COLLECTION_STATUS = 'SUCCESS'
+                   AND LAST_METADATA_COLLECTION_TIMESTAMP BETWEEN :lv_driver_run_start_time AND :lv_driver_run_end_time THEN 1 END)
+    INTO lv_overall_success_count
+    FROM IDENTIFIER(:LV_TRACKING_TABLE_FQDN);
+
+    SELECT
+        COUNT(CASE WHEN LAST_REFRESH_HISTORY_COLLECTION_STATUS IN ('FAILED', 'FAILED_EXECUTION', 'FAILED_INPUT', 'FAILED_SUBMISSION')
+                   AND LAST_REFRESH_HISTORY_COLLECTION_TIMESTAMP BETWEEN :lv_driver_run_start_time AND :lv_driver_run_end_time THEN 1 END) +
+        COUNT(CASE WHEN LAST_METADATA_COLLECTION_STATUS IN ('FAILED', 'FAILED_EXECUTION', 'FAILED_INPUT', 'FAILED_SUBMISSION')
+                   AND LAST_METADATA_COLLECTION_TIMESTAMP BETWEEN :lv_driver_run_start_time AND :lv_driver_run_end_time THEN 1 END)
+    INTO lv_overall_fail_count
+    FROM IDENTIFIER(:LV_TRACKING_TABLE_FQDN);
+
+    lv_message := lv_message || 'Total tables in tracking: ' || lv_total_tables_found || '\n';
+    lv_message := lv_message || 'Total ASYNC Jobs launched: ' || lv_jobs_launched_count || '\n';
+    lv_message := lv_message || 'Overall Success for this run: ' || lv_overall_success_count || '\n';
+    lv_message := lv_message || 'Overall Failed for this run: ' || lv_overall_fail_count || '\n';
+
+    RETURN lv_message;
+
+EXCEPTION
+    WHEN OTHER THEN
+        lv_error_message_overall := 'Major Error in DYNAMIC TABLE COLLECTION DRIVER: ' || SQLERRM();
+        RETURN lv_error_message_overall;
+END;
 $$;
