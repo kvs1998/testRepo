@@ -1,8 +1,7 @@
-CREATE OR REPLACE PROCEDURE YOUR_DB.YOUR_SCHEMA.SP_COLLECT_DT_REFRESH_HISTORY(
+CREATE OR REPLACE PROCEDURE YOUR_DB.YOUR_SCHEMA.SP_COLLECT_DYNAMIC_TABLE_METADATA(
     P_DATABASE_NAME VARCHAR,
     P_SCHEMA_NAME VARCHAR,
     P_TABLE_NAME VARCHAR,
-    P_COLLECT_FROM_LAST_DAYS NUMBER,
     P_DATA_STAGING_TABLE_FQDN VARCHAR,
     P_TRACKING_STAGING_TABLE_FQDN VARCHAR,
     P_RUN_UUID VARCHAR
@@ -21,12 +20,9 @@ DECLARE
     lv_status VARCHAR;
     lv_message VARCHAR;
 
-    LV_MAX_INFO_SCHEMA_DAYS NUMBER := 7;
-    lv_actual_days_to_collect NUMBER;
-
     -- NEW: Declare custom exceptions
-    E_INPUT_VALIDATION_FAILED EXCEPTION (-20001, 'Input Validation Failed for Refresh History Collection');
-    E_COLLECTION_EXECUTION_FAILED EXCEPTION (-20002, 'Data Collection Execution Failed for Refresh History');
+    E_INPUT_VALIDATION_FAILED EXCEPTION (-20003, 'Input Validation Failed for Metadata Collection');
+    E_COLLECTION_EXECUTION_FAILED EXCEPTION (-20004, 'Data Collection Execution Failed for Metadata');
 
 BEGIN
     lv_qualified_name_to_filter := :P_DATABASE_NAME || '.' || :P_SCHEMA_NAME || '.' || :P_TABLE_NAME;
@@ -37,50 +33,49 @@ BEGIN
         IF (P_DATABASE_NAME IS NULL OR TRIM(P_DATABASE_NAME) = '' OR
             P_SCHEMA_NAME IS NULL OR TRIM(P_SCHEMA_NAME) = '' OR
             P_TABLE_NAME IS NULL OR TRIM(P_TABLE_NAME) = '' OR
-            P_COLLECT_FROM_LAST_DAYS IS NULL OR P_COLLECT_FROM_LAST_DAYS <= 0 OR
             P_DATA_STAGING_TABLE_FQDN IS NULL OR TRIM(P_DATA_STAGING_TABLE_FQDN) = '' OR
             P_TRACKING_STAGING_TABLE_FQDN IS NULL OR TRIM(P_TRACKING_STAGING_TABLE_FQDN) = '' OR
             P_RUN_UUID IS NULL OR TRIM(P_RUN_UUID) = '') THEN
 
             lv_status := 'FAILED_INPUT';
-            lv_message := 'ERROR: Invalid input for SP_COLLECT_DT_REFRESH_HISTORY. Missing required parameters.';
+            lv_message := 'ERROR: Invalid input for SP_COLLECT_DYNAMIC_TABLE_METADATA. Missing required parameters.';
             RAISE E_INPUT_VALIDATION_FAILED; -- Use declared exception
         END IF;
 
-        lv_actual_days_to_collect := LEAST(P_COLLECT_FROM_LAST_DAYS, LV_MAX_INFO_SCHEMA_DAYS);
-
-        lv_func_args := '
-            NAME => ''' || :P_DATABASE_NAME || '.' || :P_SCHEMA_NAME || '.' || :P_TABLE_NAME || ''',
-            END_TIME_RANGE_START => DATEADD(day, -' || :lv_actual_days_to_collect || ', ''' || lv_collection_current_time || '''::TIMESTAMP_LTZ),
-            END_TIME_RANGE_END => ''' || lv_collection_current_time || '''::TIMESTAMP_LTZ
-        ';
+        lv_func_args := 'NAME => ''' || :lv_qualified_name_to_filter || '''';
 
         EXECUTE IMMEDIATE '
             INSERT INTO IDENTIFIER(?) (
-                DATABASE_NAME, SCHEMA_NAME, TABLE_NAME, QUALIFIED_NAME,
-                STATE, STATE_CODE, STATE_MESSAGE, QUERY_ID, DATA_TIMESTAMP,
-                REFRESH_START_TIME, REFRESH_END_TIME, COMPLETION_TARGET,
-                LAST_COMPLETED_DEPENDENCY_QUALIFIED_NAME, LAST_COMPLETED_DEPENDENCY_DATA_TIMESTAMP,
-                NUMINSERTEDROWS, NUMDELETEDROWS, NUMCOPIEDROWS, NUMADDEDPARTITIONS, NUMREMOVEDPARTITIONS,
-                REFRESH_ACTION, REFRESH_TRIGGER, TARGET_LAG_SEC, GRAPH_HISTORY_VALID_FROM
+                COLLECTION_TIMESTAMP, DATABASE_NAME, SCHEMA_NAME, TABLE_NAME, QUALIFIED_NAME,
+                TARGET_LAG_SEC, TARGET_LAG_TYPE,
+                SCHEDULING_STATE_STATUS, SCHEDULING_STATE_REASON_CODE, SCHEDULING_STATE_REASON_MESSAGE,
+                SCHEDULING_STATE_SUSPENDED_ON, SCHEDULING_STATE_RESUMED_ON,
+                MEAN_LAG_SEC, MAXIMUM_LAG_SEC, TIME_ABOVE_TARGET_LAG_SEC, TIME_WITHIN_TARGET_LAG_RATIO,
+                LATEST_DATA_TIMESTAMP, LAST_COMPLETED_REFRESH_STATE, LAST_COMPLETED_REFRESH_STATE_CODE,
+                LAST_COMPLETED_REFRESH_STATE_MESSAGE, EXECUTING_REFRESH_QUERY_ID
             )
             SELECT
-                drh.DATABASE_NAME, drh.SCHEMA_NAME, drh.TABLE_NAME, drh.QUALIFIED_NAME,
-                drh.STATE, drh.STATE_CODE, drh.STATE_MESSAGE, drh.QUERY_ID, drh.DATA_TIMESTAMP,
-                drh.REFRESH_START_TIME, drh.REFRESH_END_TIME, drh.COMPLETION_TARGET,
-                drh.LAST_COMPLETED_DEPENDENCY:QUALIFIED_NAME::TEXT,
-                drh.LAST_COMPLETED_DEPENDENCY:DATA_TIMESTAMP::TIMESTAMP_LTZ,
-                drh.STATISTICS:NUMINSERTEDROWS::NUMBER, drh.STATISTICS:NUMDELETEDROWS::NUMBER,
-                drh.STATISTICS:NUMCOPIEDROWS::NUMBER, drh.STATISTICS:NUMADDEDPARTITIONS::NUMBER,
-                drh.STATISTICS:NUMREMOVEDPARTITIONS::NUMBER, drh.REFRESH_ACTION,
-                drh.REFRESH_TRIGGER, drh.TARGET_LAG_SEC, drh.GRAPH_HISTORY_VALID_FROM
+                CURRENT_TIMESTAMP()::TIMESTAMP_NTZ AS COLLECTION_TIMESTAMP_SOURCE,
+                dt.DATABASE_NAME, dt.SCHEMA_NAME, dt.NAME AS TABLE_NAME, dt.QUALIFIED_NAME,
+                dt.TARGET_LAG_SEC, dt.TARGET_LAG_TYPE,
+                dt.SCHEDULING_STATE:STATE::TEXT,
+                dt.SCHEDULING_STATE:REASON_CODE::TEXT,
+                dt.SCHEDULING_STATE:REASON_MESSAGE::TEXT,
+                dt.SCHEDULING_STATE:SUSPENDED_ON::TIMESTAMP_NTZ,
+                dt.SCHEDULING_STATE:RESUMED_ON::TIMESTAMP_NTZ,
+                dt.MEAN_LAG_SEC, dt.MAXIMUM_LAG_SEC, dt.TIME_ABOVE_TARGET_LAG_SEC, dt.TIME_WITHIN_TARGET_LAG_RATIO,
+                dtrh.LATEST_DATA_TIMESTAMP::TIMESTAMP_NTZ,
+                dtrh.LAST_COMPLETED_REFRESH_STATE,
+                dtrh.LAST_COMPLETED_REFRESH_STATE_CODE,
+                dtrh.LAST_COMPLETED_REFRESH_STATE_MESSAGE,
+                dtrh.EXECUTING_REFRESH_QUERY_ID
             FROM
-                TABLE(INFORMATION_SCHEMA.DYNAMIC_TABLE_REFRESH_HISTORY(' || lv_func_args || ')) drh
-            WHERE drh.QUALIFIED_NAME = ''' || :lv_qualified_name_to_filter || '''
+                TABLE(INFORMATION_SCHEMA.DYNAMIC_TABLES(' || lv_func_args || ')) dtrh
+            WHERE dtrh.QUALIFIED_NAME = ''' || :lv_qualified_name_to_filter || '''
         ' USING P_DATA_STAGING_TABLE_FQDN;
 
         lv_records_fetched := ROW_COUNT();
-        lv_message := 'Successfully collected ' || lv_records_fetched || ' records into history staging.';
+        lv_message := 'Successfully collected ' || lv_records_fetched || ' records into metadata staging.';
         lv_status := 'SUCCESS';
 
     EXCEPTION
@@ -88,7 +83,7 @@ BEGIN
             -- Message already set above
             lv_status := 'FAILED_INPUT';
         WHEN OTHER THEN
-            lv_message := 'Error collecting history for ' || lv_qualified_name_to_filter || ': ' || SQLERRM();
+            lv_message := 'Error collecting metadata for ' || lv_qualified_name_to_filter || ': ' || SQLERRM();
             lv_status := 'FAILED_EXECUTION';
             -- No need to RAISE again, just handle it and fall through to the final insert
     END;
@@ -103,7 +98,7 @@ BEGIN
             COLLECTION_TIMESTAMP,
             DRIVER_RUN_UUID
         ) VALUES (?, ?, ?, ?, ?);
-    ' USING P_TRACKING_STAGING_TABLE_FQDN, lv_qualified_name_to_filter, 'REFRESH_HISTORY', lv_status, lv_message, lv_collection_current_time, P_RUN_UUID;
+    ' USING P_TRACKING_STAGING_TABLE_FQDN, lv_qualified_name_to_filter, 'METADATA_SNAPSHOT', lv_status, lv_message, lv_collection_current_time, P_RUN_UUID;
 
     RETURN lv_status;
 $$;
